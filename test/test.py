@@ -1,3 +1,6 @@
+#
+# Copyright defined in LICENSE.txt
+#
 import unittest
 import sqlite3
 import json
