@@ -100,6 +100,7 @@ shell.o: shell.c
 
 install:
 	mkdir -p $(LIBPATH)
+	mkdir -p $(LIBPATH2)
 	cp $(LIBRARY) $(LIBPATH)/
 	cd $(LIBPATH) && ln -sf $(LIBRARY) $(LIBNICK1)
 ifeq ($(OS),OSX)
