@@ -265,11 +265,24 @@ sudo make install
 
 ### Running the Tests
 
+The tests are written in Python using the [pysqlite](https://github.com/ghaering/pysqlite) wrapper.
+
+On MacOSX we cannot use a modified SQLite library with the pre-installed system python due to the System Integrity Protection so we need to install another copy of pysqlite and link it to the LiteTree library:
+
+```
+git clone https://github.com/ghaering/pysqlite
+cd pysqlite
+echo "include_dirs=/usr/local/include" >> setup.cfg
+echo "library_dirs=/usr/local/lib/litetree" >> setup.cfg
+python setup.py build
+sudo python setup.py install
+```
+
+To run the tests:
+
 ```
 make test
 ```
-The tests are written in Python and are easy to read.
-
 
 ### License
 

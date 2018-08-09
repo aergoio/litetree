@@ -4,8 +4,6 @@
 # we can set the LD_LIBRARY_PATH when opening the app or set the rpath
 # in the executable.
 
-#LIBFLAGS =  -I../lmdb/libraries/liblmdb -Wall
-#LDFLAGS = -L../lmdb/libraries/liblmdb -llmdb -lpthread
 LIBFLAGS =  -Wall
 LDFLAGS = -llmdb -lpthread
 
@@ -20,8 +18,9 @@ else
         LIBNICK1 = liblitetree.dylib
         LIBNICK2 = libsqlite3.0.dylib
         LIBNICK3 = libsqlite3.dylib
-        CURR_VERSION = 1.0.0
-        COMPAT_VERSION = 1.0
+        INSTNAME = $(LIBPATH2)/libsqlite3.dylib
+        CURR_VERSION   = 1.0.0
+        COMPAT_VERSION = 1.0.0
     else
         LIBRARY  = liblitetree.so.0.0.1
         LIBNICK1 = liblitetree.so.0
@@ -68,8 +67,9 @@ litetree-0.1.dll: $(SHORT).o
 	strip $(LIBRARY)
 
 liblitetree.0.dylib: $(SHORT).o
-	$(CC) -dynamiclib -install_name "$@" -current_version $(CURR_VERSION) -compatibility_version $(COMPAT_VERSION) $^ -o $@ $(LDFLAGS)
+	$(CC) -dynamiclib -install_name "$(INSTNAME)" -current_version $(CURR_VERSION) -compatibility_version $(COMPAT_VERSION) $^ -o $@ $(LDFLAGS)
 	#strip $(LIBRARY)
+	install_name_tool -change liblmdb.so /usr/local/lib/liblmdb.so $@
 	ln -sf $(LIBRARY) $(LIBNICK1)
 	ln -sf $(LIBRARY) $(LIBNICK2)
 	ln -sf $(LIBRARY) $(LIBNICK3)
@@ -118,7 +118,11 @@ clean:
 
 test: test/test.py
 	#cd test && LD_LIBRARY_PATH=..:../../lmdb/libraries/liblmdb/ python test.py -v
+ifeq ($(OS),OSX)
+	cd test && python test.py -v
+else
 	cd test && LD_LIBRARY_PATH=.. python test.py -v
+endif
 
 # variables:
 #   $@  output

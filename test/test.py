@@ -2,9 +2,20 @@
 # Copyright defined in LICENSE.txt
 #
 import unittest
-import sqlite3
 import json
 import os
+import platform
+
+if platform.system() == "Darwin":
+    import pysqlite2.dbapi2 as sqlite3
+else:
+    import sqlite3
+
+sqlite_version = "3.24.0"
+
+if sqlite3.sqlite_version != sqlite_version:
+    print "wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version
+    quit()
 
 def delete_file(filepath):
     if os.path.exists(filepath):
