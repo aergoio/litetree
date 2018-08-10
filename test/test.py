@@ -709,7 +709,41 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test10_normal_sqlite(self):
+    def test10_rollback(self):
+        conn = sqlite3.connect('file:test.db?branches=on')
+        conn.isolation_level = None  # disables auto commit
+        c = conn.cursor()
+
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("begin")
+        c.execute("insert into t1 values ('another')")
+        c.execute("create table t2(name)")
+        c.execute("insert into t2 values ('first')")
+        c.execute("insert into t2 values ('second')")
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("second",),("third",),("another",)])
+
+        c.execute("select * from t2")
+        self.assertListEqual(c.fetchall(), [("first",),("second",)])
+
+        conn.rollback()
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("select * from t2")
+
+        c.execute("select name from sqlite_master")
+        self.assertListEqual(c.fetchall(), [("t1",)])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("second",),("third",)])
+
+        conn.close()
+
+
+    def test11_normal_sqlite(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('test4.db')
         conn2 = sqlite3.connect('test4.db')
