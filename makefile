@@ -6,6 +6,7 @@
 
 LIBFLAGS =  -Wall
 LDFLAGS = -llmdb -lpthread
+LMDBPATH = /usr/local/lib
 
 ifeq ($(OS),Windows_NT)
     IMPLIB   = litetree-0.1
@@ -75,7 +76,7 @@ liblitetree.0.dylib: $(SHORT).o
 	ln -sf $(LIBRARY) $(LIBNICK3)
 
 liblitetree.so.0.0.1: $(SHORT).o
-	$(CC) -shared -Wl,-soname,$(SONAME) -Wl,-rpath,$(LIBPATH) $^ -o $@ $(LDFLAGS)
+	$(CC) -shared -Wl,-soname,$(SONAME) -Wl,-rpath,$(LMDBPATH) $^ -o $@ $(LDFLAGS)
 	strip $(LIBRARY)
 	ln -sf $(LIBRARY) $(LIBNICK1)
 	ln -sf $(LIBNICK1) $(LIBNICK2)
