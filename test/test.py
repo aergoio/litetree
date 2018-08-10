@@ -41,6 +41,9 @@ class TestSQLiteBranches(unittest.TestCase):
         c.execute("pragma page_size")
         self.assertEqual(c.fetchone()[0], 4096)
 
+        c.execute("pragma journal_mode")
+        self.assertEqual(c.fetchone()[0], "branches")
+
         c.execute("pragma branch")
         self.assertEqual(c.fetchone()[0], "master")
 
@@ -130,6 +133,9 @@ class TestSQLiteBranches(unittest.TestCase):
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
 
+        c.execute("pragma journal_mode")
+        self.assertEqual(c.fetchone()[0], "branches")
+
         c.execute("pragma branch_info(master)")
         obj = json.loads(c.fetchone()[0])
         self.assertEqual(obj["total_commits"], 5)
@@ -165,6 +171,11 @@ class TestSQLiteBranches(unittest.TestCase):
         c2.execute("pragma page_size")
         self.assertEqual(c1.fetchone()[0], 4096)
         self.assertEqual(c2.fetchone()[0], 4096)
+
+        c1.execute("pragma journal_mode")
+        c2.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+        self.assertEqual(c2.fetchone()[0], "branches")
 
         c1.execute("pragma branches")
         c2.execute("pragma branches")
@@ -225,6 +236,11 @@ class TestSQLiteBranches(unittest.TestCase):
         c2.execute("pragma page_size")
         self.assertEqual(c1.fetchone()[0], 4096)
         self.assertEqual(c2.fetchone()[0], 4096)
+
+        c1.execute("pragma journal_mode")
+        c2.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+        self.assertEqual(c2.fetchone()[0], "branches")
 
         c1.execute("pragma branch")
         c2.execute("pragma branch")
@@ -303,6 +319,11 @@ class TestSQLiteBranches(unittest.TestCase):
         c2.execute("pragma page_size")
         self.assertEqual(c1.fetchone()[0], 4096)
         self.assertEqual(c2.fetchone()[0], 4096)
+
+        c1.execute("pragma journal_mode")
+        c2.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+        self.assertEqual(c2.fetchone()[0], "branches")
 
         c1.execute("pragma branch")
         c2.execute("pragma branch")
