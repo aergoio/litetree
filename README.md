@@ -221,6 +221,49 @@ LiteTree can be used in many programming languages via existing SQLite wrappers.
 	This can also be used with many programming languages. But use it with care because the native library may have been compiled with different directives.
 
 
+##### On Mac OSX
+
+ This can be achieved in these ways:
+
+- Patching your wrapper or app to search for the library in the new path:
+
+	```
+	install_name_tool -change /old/path/to/libsqlite3.dylib /usr/local/lib/litetree/libsqlite3.dylib lib_or_app
+	```
+
+	You can check the old path with this command:
+
+	```
+	otool -L lib_or_app
+	```
+
+	This method can be used with all programming languages and wrappers as long as they are not protected by the OS.
+
+	It it is protected then you will need to install a new copy of the wrapper, modify it and use it instead of the protected one.
+
+- Using the `DYLD_LIBRARY_PATH` environment variable:
+
+	```
+	DYLD_LIBRARY_PATH=/usr/local/lib/litetree ./myapp
+	```
+
+	This can be used if the wrapper was linked to just the library name and does not contain any path.
+
+	If it does not work we can patch the wrapper to not contain any path:
+
+	```
+	install_name_tool -change /old/path/to/libsqlite3.dylib libsqlite3.dylib lib_or_app
+	```
+
+	But if you are able to modify the wrapper with `install_name_tool` then the first method above may be better.
+
+- Linking to the LiteTree library:
+
+	```
+	gcc myapp.c -L/usr/local/lib/litetree -lsqlite3
+	```
+
+
 ##### On Windows
 
 Copy the modified SQLite library to the system folder.
