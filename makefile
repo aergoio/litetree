@@ -4,13 +4,15 @@
 # we can set the LD_LIBRARY_PATH when opening the app or set the rpath
 # in the executable.
 
-LIBFLAGS =  -Wall
-LDFLAGS = -llmdb -lpthread
 LMDBPATH = /usr/local/lib
+LIBFLAGS = -Wall -I$(LMDBPATH) $(CFLAGS)
+LDFLAGS  = $(LFLAGS) -L$(LMDBPATH) -llmdb
 
 ifeq ($(OS),Windows_NT)
     IMPLIB   = litetree-0.1
     LIBRARY  = litetree-0.1.dll
+    #LIBFLAGS += $(LMDBPATH)mdb.c $(LMDBPATH)midl.c
+    LDFLAGS  += -static-libgcc -static-libstdc++
 else
     UNAME_S := $(shell uname -s)
     ifeq ($(UNAME_S),Darwin)
@@ -35,11 +37,12 @@ else
     LIBPATH2 = $(prefix)/lib/litetree
     INCPATH  = $(prefix)/include
     EXEPATH  = $(prefix)/bin
-    LIBFLAGS += -fPIC $(CFLAGS)
+    LIBFLAGS += -fPIC
+    LDFLAGS  += -lpthread
     SHELLFLAGS = -DHAVE_READLINE
 endif
 
-CC ?= gcc
+CC = gcc
 
 SHORT = sqlite3
 
