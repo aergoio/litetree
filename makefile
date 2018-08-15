@@ -4,13 +4,13 @@
 # we can set the LD_LIBRARY_PATH when opening the app or set the rpath
 # in the executable.
 
-LMDBPATH = /usr/local/lib
 LIBFLAGS = -Wall -I$(LMDBPATH) $(CFLAGS)
 LDFLAGS  = $(LFLAGS) -L$(LMDBPATH) -llmdb
 
 ifeq ($(OS),Windows_NT)
     IMPLIB   = litetree-0.1
     LIBRARY  = litetree-0.1.dll
+    LMDBPATH = ../lmdb/libraries/liblmdb
     #LIBFLAGS += $(LMDBPATH)mdb.c $(LMDBPATH)midl.c
     LDFLAGS  += -static-libgcc -static-libstdc++
 else
@@ -32,6 +32,7 @@ else
         LIBNICK4 = libsqlite3.so
         SONAME   = libsqlite3.so.0
     endif
+    LMDBPATH = /usr/local/lib
     prefix  ?= /usr/local
     LIBPATH  = $(prefix)/lib
     LIBPATH2 = $(prefix)/lib/litetree
@@ -122,8 +123,16 @@ clean:
 	rm -f *.o $(LIBRARY) $(LIBNICK1) $(LIBNICK2) $(LIBNICK3) $(LIBNICK4) $(SSHELL)
 
 test: test/test.py
-	#cd test && LD_LIBRARY_PATH=..:../../lmdb/libraries/liblmdb/ python test.py -v
-ifeq ($(OS),OSX)
+ifeq ($(OS),Windows_NT)
+ifeq ($(PY_HOME),)
+	@echo "PY_HOME is not set"
+else
+	cd $(PY_HOME)/DLLs && [ ! -f sqlite3-orig.dll ] && mv sqlite3.dll sqlite3-orig.dll || true
+	cp litetree-0.1.dll $(PY_HOME)/DLLs/sqlite3.dll
+	cp $(LMDBPATH)/lmdb.dll $(PY_HOME)/DLLs/lmdb.dll
+	cd test && python test.py -v
+endif
+else ifeq ($(OS),OSX)
 	cd test && python test.py -v
 else
 	cd test && LD_LIBRARY_PATH=.. python test.py -v
