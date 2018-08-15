@@ -194,9 +194,9 @@ LiteTree can be used in many programming languages via existing SQLite wrappers.
 
 2. Make your app use this new library instead of the pre-installed SQLite library:
 
-##### On Linux and Mac OSX
+##### On Linux
 
- This can be achieved in 3 ways:
+ This can be achieved in 4 ways:
 
 - Using the `LD_LIBRARY_PATH` environment variable:
 	```
@@ -226,9 +226,11 @@ LiteTree can be used in many programming languages via existing SQLite wrappers.
 Copy the modified SQLite library to the system folder.
 
 - On 64 bit Windows:
-			
-	C:\Windows\SysWOW64
-			
+
+	C:\Windows\System32 (if 64 bit DLL)
+
+	C:\Windows\SysWOW64 (if 32 bit DLL)
+
 - On 32 bit Windows:
 
 	C:\Windows\System32
