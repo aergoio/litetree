@@ -162,7 +162,43 @@ The data is not compressed, and each db page is stored on just one disk sector (
 
 ## Performance
 
-To Do
+LiteTree is more than **TWICE AS FAST** than normal SQLite on Linux!!!
+
+Here are the some results:
+
+##### Linux
+
+```
+writing:
+--------
+normal   = 3.06862306595 seconds
+litetree = 1.49606800079 seconds
+
+reading:
+--------
+normal   = 0.00796008110046 seconds
+litetree = 0.00337290763855 seconds
+```
+
+##### Windows
+
+```
+writing:
+--------
+normal   = 68.0931215734 seconds
+litetree = 39.239919979 seconds
+
+reading:
+--------
+normal   = 0.012673914421 seconds
+litetree = 0.00631055510799 seconds
+```
+
+You can make your own benchmark (after installing LiteTree) with this command:
+
+```
+make benchmark
+```
 
 ## Current Limits
 
