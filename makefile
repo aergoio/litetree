@@ -58,7 +58,7 @@ endif
 LIBFLAGS := $(LIBFLAGS) -DSQLITE_USE_URI=1 -DSQLITE_ENABLE_JSON1 -DSQLITE_THREADSAFE=1 -DHAVE_USLEEP -DSQLITE_ENABLE_COLUMN_METADATA
 
 
-.PHONY:  install debug test clean
+.PHONY:  install debug test benchmark clean
 
 
 all:   $(LIBRARY) $(SSHELL)
@@ -136,6 +136,22 @@ else ifeq ($(OS),OSX)
 	cd test && python test.py -v
 else
 	cd test && LD_LIBRARY_PATH=.. python test.py -v
+endif
+
+benchmark: test/benchmark.py
+ifeq ($(OS),Windows_NT)
+ifeq ($(PY_HOME),)
+	@echo "PY_HOME is not set"
+else
+	cd $(PY_HOME)/DLLs && [ ! -f sqlite3-orig.dll ] && mv sqlite3.dll sqlite3-orig.dll || true
+	cp litetree-0.1.dll $(PY_HOME)/DLLs/sqlite3.dll
+	cp $(LMDBPATH)/lmdb.dll $(PY_HOME)/DLLs/lmdb.dll
+	cd test && python benchmark.py -v
+endif
+else ifeq ($(OS),OSX)
+	cd test && python benchmark.py -v
+else
+	cd test && LD_LIBRARY_PATH=.. python benchmark.py -v
 endif
 
 # variables:
