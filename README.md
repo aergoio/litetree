@@ -95,7 +95,7 @@ We cannot write to the database when we are in a defined commit, writing is only
 
 It is also possible to truncate a branch at a specific commit, rename a branch, delete it and retrieve branch info.
 
-### Supported commands
+## Supported commands
 
 - Selecting the active branch:
 	```
@@ -136,7 +136,7 @@ It is also possible to truncate a branch at a specific commit, rename a branch, 
 
 #### Not yet available:
 
-These commands could be implemented if required:
+These commands can be implemented if required:
 
 - Showing the commit and SQL log/history for a branch:
 	```
@@ -152,7 +152,7 @@ These commands could be implemented if required:
 	```
 
 
-### Technologies
+## Technologies
 
 We can use LiteTree with big databases (many gigabytes). There is no data copying when a new branch is created. When a new transaction is commited only the modified database pages are copied.
 
@@ -160,11 +160,11 @@ LiteTree is implemented storing the SQLite db pages on LMDB.
 
 The data is not compressed, and each db page is stored on just one disk sector (4096 bytes by default). This is achieved by reserving some bytes at each SQLite db page so it can fit into one LMDB overflow page, that can hold 4080 (4096 - 16) bytes.
 
-### Performance
+## Performance
 
 To Do
 
-### Current Limits
+## Current Limits
 
 Number of branches: 1024 branches  (can be increased)
 
@@ -174,7 +174,7 @@ Number of commits per branch: 2^32 = 4,294,967,295 commits
 
 Concurrent db connections to the same db: XXX readers
 
-### Some Limitations
+## Some Limitations
 
 A database file created in one architecture cannot be used in another. This is a limitation of LMDB. We need to dump the database using `mdb_dump` and load it using `mdb_load`.
 
@@ -183,7 +183,7 @@ The db file cannot be opened by unmodified SQLite libraries.
 Savepoints are not yet supported.
 
 
-### How to use
+## How to use
 
 LiteTree can be used in many programming languages via existing SQLite wrappers.
 
@@ -194,7 +194,7 @@ LiteTree can be used in many programming languages via existing SQLite wrappers.
 
 2. Make your app use this new library instead of the pre-installed SQLite library:
 
-##### On Linux
+### On Linux
 
  This can be achieved in 4 ways:
 
@@ -221,7 +221,7 @@ LiteTree can be used in many programming languages via existing SQLite wrappers.
 	This can also be used with many programming languages. But use it with care because the native library may have been compiled with different directives.
 
 
-##### On Mac OSX
+### On Mac OSX
 
  This can be achieved in these ways:
 
@@ -264,7 +264,7 @@ LiteTree can be used in many programming languages via existing SQLite wrappers.
 	```
 
 
-##### On Windows
+### On Windows
 
 Copy the modified SQLite library to the system folder.
 
@@ -279,9 +279,9 @@ Copy the modified SQLite library to the system folder.
 	C:\Windows\System32
 
 
-### Compiling and installing
+## Compiling and installing
 
-##### On Linux and Mac OSX
+### On Linux and Mac OSX
 
 Install [LMDB](https://github.com/lmdb/lmdb) if not already installed:
 
@@ -301,7 +301,7 @@ make
 sudo make install
 ```
 
-##### On Windows
+### On Windows
 
 You can use these pre-compiled binaries: (can be outdated)
 
@@ -317,7 +317,7 @@ Or follow these steps:
 3. Copy the libraries to the Windows System folder
 
 
-### Running the Tests
+## Running the Tests
 
 The tests are written in Python using the [pysqlite](https://github.com/ghaering/pysqlite) wrapper.
 
@@ -338,14 +338,14 @@ To run the tests:
 make test
 ```
 
-### License
+## License
 
 MIT
 
-### Creator
+## Creator
 
 Developed by Bernardo Ramos at Blocko Inc. ([blocko.io](http://blocko.io))
 
-### Contact
+## Contact
 
 bernardo AT blocko D0T io
