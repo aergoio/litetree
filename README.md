@@ -303,16 +303,25 @@ sudo make install
 
 ##### On Windows
 
-1. Compile the library using MinGW or Visual Studio
+You can use these pre-compiled binaries: (can be outdated)
 
-2. Copy the LiteTree library to the Windows System folder
+- [32 bit DLLs](http://litesync.io/litetree/litetree-binaries-win-x86.zip)
+- [64 bit DLLs](http://litesync.io/litetree/litetree-binaries-win-x64.zip)
+
+Or follow these steps:
+
+1. Compile LMDB using [MinGW](https://github.com/Alexpux/MINGW-packages/tree/master/mingw-w64-lmdb) or Visual Studio ([1](https://github.com/Ri0n/lmdb) or [2](https://github.com/htaox/lightningdb-win))
+
+2. Compile LiteTree using MinGW or Visual Studio
+
+3. Copy the libraries to the Windows System folder
 
 
 ### Running the Tests
 
 The tests are written in Python using the [pysqlite](https://github.com/ghaering/pysqlite) wrapper.
 
-On MacOSX we cannot use a modified SQLite library with the pre-installed system python due to the System Integrity Protection so we need to install another copy of pysqlite and link it to the LiteTree library:
+On **MacOSX** we cannot use a modified SQLite library with the pre-installed system python due to the System Integrity Protection so we need to install another copy of pysqlite and link it to the LiteTree library:
 
 ```
 git clone https://github.com/ghaering/pysqlite
