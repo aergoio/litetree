@@ -162,7 +162,7 @@ The data is not compressed, and each db page is stored on just one disk sector (
 
 ## Performance
 
-LiteTree is more than **TWICE AS FAST** than normal SQLite on Linux!!!
+LiteTree is more than **TWICE AS FAST** than normal SQLite on Linux and MacOSX!!!
 
 Here are the some results:
 
@@ -178,6 +178,20 @@ reading:
 --------
 normal   = 0.00796008110046 seconds
 litetree = 0.00337290763855 seconds
+```
+
+##### MacOSX
+
+```
+writing:
+--------
+normal   = 0.562711000443 seconds
+litetree = 0.192953109741 seconds
+
+reading:
+--------
+normal   = 0.00511813163757 seconds
+litetree = 0.00336885452271 seconds
 ```
 
 ##### Windows
