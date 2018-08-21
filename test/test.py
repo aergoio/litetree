@@ -229,6 +229,9 @@ class TestSQLiteBranches(unittest.TestCase):
     def test04_concurrent_access(self):
         conn1 = sqlite3.connect('file:test2.db?branches=on')
         conn2 = sqlite3.connect('file:test2.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
         c1 = conn1.cursor()
         c2 = conn2.cursor()
 
@@ -291,6 +294,9 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
         conn1 = sqlite3.connect('file:test2.db?branches=on')
         conn2 = sqlite3.connect('file:test2.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
         c1 = conn1.cursor()
         c2 = conn2.cursor()
 
@@ -711,7 +717,7 @@ class TestSQLiteBranches(unittest.TestCase):
 
     def test10_rollback(self):
         conn = sqlite3.connect('file:test.db?branches=on')
-        conn.isolation_level = None  # disables auto commit
+        conn.isolation_level = None  # enables autocommit mode
         c = conn.cursor()
 
         c.execute("pragma branch")
@@ -747,6 +753,9 @@ class TestSQLiteBranches(unittest.TestCase):
         delete_file("test4.db")
         conn1 = sqlite3.connect('test4.db')
         conn2 = sqlite3.connect('test4.db')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
         c1 = conn1.cursor()
         c2 = conn2.cursor()
 
@@ -789,6 +798,9 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
         conn1 = sqlite3.connect('test4.db')
         conn2 = sqlite3.connect('test4.db')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
         c1 = conn1.cursor()
         c2 = conn2.cursor()
 
@@ -809,6 +821,9 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
         conn1 = sqlite3.connect('test4.db')
         conn2 = sqlite3.connect('test4.db')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
         c1 = conn1.cursor()
         c2 = conn2.cursor()
 
@@ -836,6 +851,9 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
         conn1 = sqlite3.connect('test4.db')
         conn2 = sqlite3.connect('test4.db')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
         c1 = conn1.cursor()
         c2 = conn2.cursor()
 
