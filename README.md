@@ -4,7 +4,9 @@
 
 Imagine being able to have many connections to the same database, each one reading a separate branch or commit at the same time. Or even writing to separate branches.
 
-This is possible with **LiteTree**. It is a modification of the SQLite engine to support branching. A very useful tool for blockchain implementations, it will be at the core of [Aergo](https://github.com/aergoio/aergo).
+This is possible with **LiteTree**. It is a modification of the SQLite engine to support branching, like git!
+
+Database branching is a very useful tool for blockchain implementations and LiteTree will be at the core of [Aergo](https://github.com/aergoio/aergo).
 
 This is how it works:
 
