@@ -394,8 +394,8 @@ MIT
 
 ## Creator
 
-Developed by Bernardo Ramos at Blocko Inc. ([blocko.io](http://blocko.io))
+Developed by Bernardo Ramos at [Aergo](https://aergo.io)
 
 ## Contact
 
-bernardo AT blocko D0T io
+bernardo {at} blocko {dot} io
