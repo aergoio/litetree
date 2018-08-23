@@ -2,7 +2,7 @@
 
 ![](http://litesync.io/litetree/graph-litetree.png)
 
-Imagine being able to have many connections to the same db, each one reading a separate branch or commit at the same time. Or even writing to separate branches.
+Imagine being able to have many connections to the same database, each one reading a separate branch or commit at the same time. Or even writing to separate branches.
 
 This is possible with **LiteTree**. It is a modification of the SQLite engine to support branching.
 
@@ -63,6 +63,7 @@ It will return these values:
 
 
 > first
+>
 > from test branch
 
 
@@ -75,6 +76,7 @@ PRAGMA branch=master
 And executing the same SELECT command (but now in the master branch) it will return:
 
 > first
+>
 > second
 
 Different content for the same table on separate branches.
