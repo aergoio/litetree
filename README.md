@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/aergoio/litetree.svg?branch=master)](https://travis-ci.org/aergoio/litetree)
+
 # LiteTree: SQLite with Branches
 
 ![](http://litesync.io/litetree/graph-litetree.png)
