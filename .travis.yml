@@ -5,7 +5,7 @@ install:
   - cd lmdb/libraries/liblmdb
   - make
   - sudo make install
-  - cd ..
+  - cd -
 
 script:
   - make
