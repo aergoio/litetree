@@ -4,8 +4,6 @@ os:
   - linux
   - osx
 
-osx_image: xcode8
-
 install:
   - git clone --depth=1 https://github.com/lmdb/lmdb
   - cd lmdb/libraries/liblmdb
@@ -15,14 +13,5 @@ install:
 
 script:
   - make
-  - sudo make install
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then
-  - git clone https://github.com/ghaering/pysqlite
-  - cd pysqlite
-  - echo "include_dirs=/usr/local/include" >> setup.cfg
-  - echo "library_dirs=/usr/local/lib/litetree" >> setup.cfg
-  - python setup.py build
-  - sudo python setup.py install
-  - cd ..
-  - fi
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then sudo make install; fi
   - make test

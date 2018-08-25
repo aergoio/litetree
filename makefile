@@ -133,6 +133,18 @@ else
 	cd test && python test.py -v
 endif
 else ifeq ($(OS),OSX)
+ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
+ifneq ($(shell [ -d /usr/local/lib/litetree ]; echo $$?),0)
+	@echo "run 'sudo make install' first"
+endif
+	git clone https://github.com/ghaering/pysqlite
+	cd pysqlite
+	echo "include_dirs=/usr/local/include" >> setup.cfg
+	echo "library_dirs=/usr/local/lib/litetree" >> setup.cfg
+	python setup.py build
+	sudo python setup.py install
+	cd ..
+endif
 	cd test && python test.py -v
 else
 	cd test && LD_LIBRARY_PATH=.. python test.py -v
@@ -149,6 +161,18 @@ else
 	cd test && python benchmark.py -v
 endif
 else ifeq ($(OS),OSX)
+ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
+ifneq ($(shell [ -d /usr/local/lib/litetree ]; echo $$?),0)
+	@echo "run 'sudo make install' first"
+endif
+	git clone https://github.com/ghaering/pysqlite
+	cd pysqlite
+	echo "include_dirs=/usr/local/include" >> setup.cfg
+	echo "library_dirs=/usr/local/lib/litetree" >> setup.cfg
+	python setup.py build
+	sudo python setup.py install
+	cd ..
+endif
 	cd test && python benchmark.py -v
 else
 	cd test && LD_LIBRARY_PATH=.. python benchmark.py -v
