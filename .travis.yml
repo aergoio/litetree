@@ -1,0 +1,12 @@
+language: c
+
+install:
+  - git clone --depth=1 https://github.com/lmdb/lmdb
+  - cd lmdb/libraries/liblmdb
+  - make
+  - sudo make install
+  - cd ..
+
+script:
+  - make
+  - make test
