@@ -159,6 +159,13 @@ These commands can be implemented if required:
 	PRAGMA branch_tree
 	```
 
+And maybe these extended features could be supported:
+
+- Save metadata to each branch
+- Save metadata to each commit
+- Merging 2 branches
+- Access control by branch
+
 
 ## Technologies
 
