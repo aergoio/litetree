@@ -161,10 +161,11 @@ These commands can be implemented if required:
 
 And maybe these extended features could be supported:
 
-- Save metadata to each branch
-- Save metadata to each commit
-- Merging 2 branches
+- [Save metadata to each branch and/or commit](https://github.com/aergoio/litetree/wiki/Storing-metadata)
+- [Merging 2 branches](https://github.com/aergoio/litetree/wiki/Merging-branches)
 - Access control by branch
+
+Check the roadmap on our [wiki](https://github.com/aergoio/litetree/wiki). Feature requests and suggestions are welcome.
 
 
 ## Technologies
