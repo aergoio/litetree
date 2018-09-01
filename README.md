@@ -410,8 +410,6 @@ MIT
 
 ## Creator
 
-Developed by Bernardo Ramos at [Aergo](https://aergo.io)
+Developed by Bernardo Ramos at
 
-## Contact
-
-bernardo {at} blocko {dot} io
+[![](http://litesync.io/litetree/aergo-small-logo.png)](https://aergo.io)
