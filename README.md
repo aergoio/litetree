@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/aergoio/litetree.svg?branch=master)](https://travis-ci.org/aergoio/litetree)
+<img src="http://litesync.io/litetree/aergo-presents-black-round.svg" width="20%"> [![Build Status](https://travis-ci.org/aergoio/litetree.svg?branch=master)](https://travis-ci.org/aergoio/litetree)
 
 # LiteTree: SQLite with Branches
 
@@ -412,4 +412,4 @@ MIT
 
 Developed by Bernardo Ramos at
 
-[![](http://litesync.io/litetree/aergo-small-logo.png)](https://aergo.io)
+<a href="https://aergo.io"><img src="http://litesync.io/litetree/aergo-logo-black-slim.svg" width="30%"></a>
