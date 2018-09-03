@@ -15,7 +15,8 @@ sqlite_version = "3.24.0"
 
 if sqlite3.sqlite_version != sqlite_version:
     print "wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version
-    quit()
+    import sys
+    sys.exit(1)
 
 def delete_file(filepath):
     if os.path.exists(filepath):
