@@ -24,4 +24,4 @@ build_script:
   - mingw32-make LMDBPATH="lmdb\libraries\liblmdb"
 
 test_script:
-  - mingw32-make test PY_HOME=%PYTHON_PATH%
+  - mingw32-make test PY_HOME=%PYTHON_PATH% LMDBPATH="lmdb\libraries\liblmdb"
