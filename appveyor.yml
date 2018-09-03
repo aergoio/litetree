@@ -1,0 +1,27 @@
+version: 0.1.{build}
+
+environment:
+  matrix:
+    - COMPILER: mingw
+      PLATFORM: Win32
+      MINGW_PATH: C:\MinGW\bin
+      PYTHON_PATH: C:\Python27
+
+    - COMPILER: mingw-w64
+      PLATFORM: x64
+      MINGW_PATH: C:\mingw-w64\x86_64-7.3.0-posix-seh-rt_v5-rev0\mingw64\bin
+      PYTHON_PATH: C:\Python27-x64
+
+install:
+  - set PATH=%MINGW_PATH%;%PATH%
+  - git clone --depth=1 https://github.com/kroggen/lmdb
+  - cd lmdb\libraries\liblmdb
+  - mingw32-make
+  - copy lmdb.dll ..\..\..
+  - cd ..\..\..
+
+build_script:
+  - mingw32-make LMDBPATH="lmdb\libraries\liblmdb"
+
+test_script:
+  - mingw32-make test PY_HOME=%PYTHON_PATH%
