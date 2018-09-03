@@ -1,4 +1,4 @@
-<img src="http://litesync.io/litetree/aergo-presents-black-round.svg" width="20%"> [![Build Status](https://travis-ci.org/aergoio/litetree.svg?branch=master)](https://travis-ci.org/aergoio/litetree)
+<img src="http://litesync.io/litetree/aergo-presents-black-round.svg" width="20%"> [![Build Status](https://travis-ci.org/aergoio/litetree.svg?branch=master)](https://travis-ci.org/aergoio/litetree) [![Build Status](https://ci.appveyor.com/api/projects/status/github/aergoio/litetree?svg=true)](https://ci.appveyor.com/project/kroggen/litetree)
 
 # LiteTree: SQLite with Branches
 
