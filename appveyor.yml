@@ -13,7 +13,7 @@ environment:
       PYTHON_PATH: C:\Python27-x64
 
 install:
-  - set PATH=%MINGW_PATH%;%PATH%
+  - set PATH=%MINGW_PATH%;PYTHON_PATH;%PATH%
   - git clone --depth=1 https://github.com/kroggen/lmdb
   - cd lmdb\libraries\liblmdb
   - mingw32-make
