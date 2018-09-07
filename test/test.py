@@ -902,6 +902,18 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertEqual(obj["total_commits"], 7)
 
 
+        # test invalid parameters
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev ")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev 0")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev -1")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev -2")
+
         # move 2 commits from child branch to master
         c1.execute("pragma branch_merge --forward master dev 2")
         self.assertListEqual(c1.fetchall(), [("OK",)])
@@ -1041,6 +1053,16 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("pragma branch")
         self.assertEqual(c1.fetchone()[0], "master")
 
+
+        # test invalid parameters
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.1")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.3")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.4")
 
         # move up to commit 6 from child branch to master
         c1.execute("pragma branch_merge --forward master dev.6")
