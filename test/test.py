@@ -1036,9 +1036,26 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
 
 
-        # move 2 commits from child branch to master
+        # now test the merge while at the parent branch
+        c1.execute("pragma branch=master")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+
+        # move up to commit 6 from child branch to master
         c1.execute("pragma branch_merge --forward master dev.6")
         self.assertListEqual(c1.fetchall(), [("OK",)])
+
+
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        c1.execute("pragma branch=dev")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
 
 
         # check if the commits were moved
