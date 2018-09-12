@@ -1,4 +1,4 @@
-<img src="http://litesync.io/litetree/aergo-presents-black-round.svg" width="20%"> [![Build Status](https://travis-ci.org/aergoio/litetree.svg?branch=master)](https://travis-ci.org/aergoio/litetree) [![Build Status](https://ci.appveyor.com/api/projects/status/github/aergoio/litetree?svg=true)](https://ci.appveyor.com/project/kroggen/litetree)
+<a href="https://aergo.io"><img src="http://litesync.io/litetree/aergo-presents-black-round.svg" width="20%"></a> [![Build Status](https://travis-ci.org/aergoio/litetree.svg?branch=master)](https://travis-ci.org/aergoio/litetree) [![Build Status](https://ci.appveyor.com/api/projects/status/github/aergoio/litetree?svg=true)](https://ci.appveyor.com/project/kroggen/litetree)
 
 # LiteTree: SQLite with Branches
 
@@ -376,7 +376,7 @@ You can use these pre-compiled binaries: (can be outdated)
 
 Or follow these steps:
 
-1. Compile LMDB using [MinGW](https://github.com/Alexpux/MINGW-packages/tree/master/mingw-w64-lmdb) or Visual Studio ([1](https://github.com/Ri0n/lmdb) or [2](https://github.com/htaox/lightningdb-win))
+1. Compile LMDB using [MinGW](https://github.com/kroggen/lmdb) or Visual Studio ([1](https://github.com/Ri0n/lmdb) or [2](https://github.com/htaox/lightningdb-win))
 
 2. Compile LiteTree using MinGW or Visual Studio
 
