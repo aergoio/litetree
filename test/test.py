@@ -909,6 +909,81 @@ class TestSQLiteBranches(unittest.TestCase):
         connat.close()
 
 
+    def test12_temporary_db(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+        c1 = conn1.cursor()
+
+        c1.execute("pragma page_size")
+        self.assertEqual(c1.fetchone()[0], 4096)
+
+        c1.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        # make modifications on connection 1
+        c1.execute("create table t1(name)")
+        conn1.commit()
+        c1.execute("insert into t1 values ('first')")
+        conn1.commit()
+
+        # attach a temporary db
+        c1.execute("attach database '' as tmp")
+
+        c1.execute("pragma tmp.page_size")
+        self.assertEqual(c1.fetchone()[0], 4096)
+
+        c1.execute("pragma tmp.journal_mode")
+        self.assertEqual(c1.fetchone()[0], "delete")
+
+        c1.execute("create table tmp.t2 (name)")
+        c1.execute("insert into t2 values ('att1')")
+        c1.execute("insert into t2 values ('att2')")
+        conn1.commit()
+
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",)])
+
+        # create a new branch on connection 1
+        c1.execute("pragma new_branch=dev at master.2")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("master",),("dev",)])
+
+        c1.execute("insert into t1 values ('second')")
+        conn1.commit()
+
+        c1.execute("insert into t2 values ('att3')")
+        conn1.commit()
+
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+        c1.execute("select * from tmp.t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+
+        c1.execute("pragma branch=master")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+        c1.execute("select * from tmp.t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+
+        conn1.close()
+
+
     def test21_normal_sqlite(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('test4.db')
