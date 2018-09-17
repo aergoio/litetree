@@ -4,7 +4,7 @@
 # we can set the LD_LIBRARY_PATH when opening the app or set the rpath
 # in the executable.
 
-LIBFLAGS = -Wall -I$(LMDBPATH) $(CFLAGS)
+LIBFLAGS = -Wall -I$(INCPATH) $(CFLAGS)
 LDFLAGS  = $(LFLAGS) -L$(LMDBPATH) -llmdb
 
 ifeq ($(OS),Windows_NT)
@@ -74,7 +74,7 @@ litetree-0.1.dll: $(SHORT).o
 liblitetree.0.dylib: $(SHORT).o
 	$(CC) -dynamiclib -install_name "$(INSTNAME)" -current_version $(CURR_VERSION) -compatibility_version $(COMPAT_VERSION) $^ -o $@ $(LDFLAGS)
 	#strip $(LIBRARY)
-	install_name_tool -change liblmdb.so /usr/local/lib/liblmdb.so $@
+	install_name_tool -change liblmdb.so $(LIBPATH)/liblmdb.so $@
 	ln -sf $(LIBRARY) $(LIBNICK1)
 	ln -sf $(LIBRARY) $(LIBNICK2)
 	ln -sf $(LIBRARY) $(LIBNICK3)
@@ -134,12 +134,12 @@ else
 endif
 else ifeq ($(OS),OSX)
 ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
-ifneq ($(shell [ -d /usr/local/lib/litetree ]; echo $$?),0)
+ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
 	@echo "run 'sudo make install' first"
 endif
 	git clone https://github.com/ghaering/pysqlite
-	cd pysqlite && echo "include_dirs=/usr/local/include" >> setup.cfg
-	cd pysqlite && echo "library_dirs=/usr/local/lib/litetree" >> setup.cfg
+	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
+	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
 	cd pysqlite && python setup.py build
 	cd pysqlite && sudo python setup.py install
 endif
@@ -160,12 +160,12 @@ else
 endif
 else ifeq ($(OS),OSX)
 ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
-ifneq ($(shell [ -d /usr/local/lib/litetree ]; echo $$?),0)
+ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
 	@echo "run 'sudo make install' first"
 endif
 	git clone https://github.com/ghaering/pysqlite
-	cd pysqlite && echo "include_dirs=/usr/local/include" >> setup.cfg
-	cd pysqlite && echo "library_dirs=/usr/local/lib/litetree" >> setup.cfg
+	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
+	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
 	cd pysqlite && python setup.py build
 	cd pysqlite && sudo python setup.py install
 endif
