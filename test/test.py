@@ -854,6 +854,12 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select * from sec.t2")
         self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",),("att4",)])
 
+        # on 32bit Windows we cannot open 3 litetree dbs at the same time ...
+        if platform.system() == "Windows" and platform.architecture()[0] == "32bit":
+            conn2.close()
+            # ... unless we use the max_db_size URI parameter when opening them, like this:
+            #ca.execute("attach database 'file:test4.db?branches=on&max_db_size=134217728' as ext")
+
         ca.execute("attach database 'file:test4.db?branches=on' as ext")
 
         ca.execute("select * from t1")
