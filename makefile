@@ -4,13 +4,14 @@
 # we can set the LD_LIBRARY_PATH when opening the app or set the rpath
 # in the executable.
 
-LIBFLAGS = -Wall -I$(LMDBPATH) $(CFLAGS)
+LIBFLAGS = -Wall -I$(LMDBINCPATH) $(CFLAGS)
 LDFLAGS  = $(LFLAGS) -L$(LMDBPATH) -llmdb
 
 ifeq ($(OS),Windows_NT)
     IMPLIB   = litetree-0.1
     LIBRARY  = litetree-0.1.dll
     LMDBPATH = ../lmdb/libraries/liblmdb
+    LMDBINCPATH = $(LMDBPATH)
     #LIBFLAGS += $(LMDBPATH)mdb.c $(LMDBPATH)midl.c
     LDFLAGS  += -static-libgcc -static-libstdc++
 else
@@ -33,6 +34,7 @@ else
         SONAME   = libsqlite3.so.0
     endif
     LMDBPATH = /usr/local/lib
+    LMDBINCPATH = /usr/local/include
     prefix  ?= /usr/local
     LIBPATH  = $(prefix)/lib
     LIBPATH2 = $(prefix)/lib/litetree
@@ -74,7 +76,7 @@ litetree-0.1.dll: $(SHORT).o
 liblitetree.0.dylib: $(SHORT).o
 	$(CC) -dynamiclib -install_name "$(INSTNAME)" -current_version $(CURR_VERSION) -compatibility_version $(COMPAT_VERSION) $^ -o $@ $(LDFLAGS)
 	#strip $(LIBRARY)
-	install_name_tool -change liblmdb.so /usr/local/lib/liblmdb.so $@
+	install_name_tool -change liblmdb.so $(LMDBPATH)/liblmdb.so $@
 	ln -sf $(LIBRARY) $(LIBNICK1)
 	ln -sf $(LIBRARY) $(LIBNICK2)
 	ln -sf $(LIBRARY) $(LIBNICK3)
@@ -134,12 +136,12 @@ else
 endif
 else ifeq ($(OS),OSX)
 ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
-ifneq ($(shell [ -d /usr/local/lib/litetree ]; echo $$?),0)
+ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
 	@echo "run 'sudo make install' first"
 endif
 	git clone https://github.com/ghaering/pysqlite
-	cd pysqlite && echo "include_dirs=/usr/local/include" >> setup.cfg
-	cd pysqlite && echo "library_dirs=/usr/local/lib/litetree" >> setup.cfg
+	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
+	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
 	cd pysqlite && python setup.py build
 	cd pysqlite && sudo python setup.py install
 endif
@@ -160,12 +162,12 @@ else
 endif
 else ifeq ($(OS),OSX)
 ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
-ifneq ($(shell [ -d /usr/local/lib/litetree ]; echo $$?),0)
+ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
 	@echo "run 'sudo make install' first"
 endif
 	git clone https://github.com/ghaering/pysqlite
-	cd pysqlite && echo "include_dirs=/usr/local/include" >> setup.cfg
-	cd pysqlite && echo "library_dirs=/usr/local/lib/litetree" >> setup.cfg
+	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
+	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
 	cd pysqlite && python setup.py build
 	cd pysqlite && sudo python setup.py install
 endif

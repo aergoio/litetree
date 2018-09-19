@@ -750,7 +750,247 @@ class TestSQLiteBranches(unittest.TestCase):
         conn.close()
 
 
-    def test11_forward_merge(self):
+    def test11_attached_dbs(self):
+        delete_file("test4.db")
+        delete_file("attached.db")
+
+        connat = sqlite3.connect('attached.db')
+        ca = connat.cursor()
+
+        ca.execute("pragma page_size")
+        self.assertEqual(ca.fetchone()[0], 4096)
+
+        ca.execute("pragma journal_mode")
+        self.assertEqual(ca.fetchone()[0], "delete")
+
+        ca.execute("create table t2(name)")
+        ca.execute("insert into t2 values ('att1')")
+        ca.execute("insert into t2 values ('att2')")
+        connat.commit()
+
+        ca.execute("select * from t2")
+        self.assertListEqual(ca.fetchall(), [("att1",),("att2",)])
+
+        ca.execute("attach database 'test1.db' as temp1")
+        ca.execute("detach database temp1")
+
+        # test db with branches with attached db
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn2 = sqlite3.connect('file:test4.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
+        c1 = conn1.cursor()
+        c2 = conn2.cursor()
+
+        c1.execute("pragma page_size")
+        c2.execute("pragma page_size")
+        self.assertEqual(c1.fetchone()[0], 4096)
+        self.assertEqual(c2.fetchone()[0], 4096)
+
+        c1.execute("pragma journal_mode")
+        c2.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+        self.assertEqual(c2.fetchone()[0], "branches")
+
+        c1.execute("pragma branch")
+        c2.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+        self.assertEqual(c2.fetchone()[0], "master")
+
+        # make modifications on connection 1
+        c1.execute("create table t1(name)")
+        conn1.commit()
+        c1.execute("insert into t1 values ('first')")
+        conn1.commit()
+
+        c1.execute("attach database 'attached.db' as sec")
+
+        # the new modifications should appear on connection 2
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",)])
+
+        # the attached db and its tables should not appear on conn2
+        with self.assertRaises(sqlite3.OperationalError):
+            c2.execute("select * from t2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c2.execute("select * from sec.t2")
+
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",)])
+        c1.execute("select * from sec.t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",)])
+
+        c1.execute("pragma sec.journal_mode")
+        self.assertEqual(c1.fetchone()[0], "delete")
+        c1.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+
+        # create a new branch on connection 1
+        c1.execute("pragma new_branch=dev at master.2")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("master",),("dev",)])
+
+        c1.execute("insert into t1 values ('second')")
+        conn1.commit()
+
+        ca.execute("insert into t2 values ('att3')")
+        connat.commit()
+
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+        c1.execute("select * from sec.t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+        ca.execute("select * from t2")
+        self.assertListEqual(ca.fetchall(), [("att1",),("att2",),("att3",)])
+
+        c1.execute("insert into t2 values ('att4')")
+        conn1.commit()
+
+        ca.execute("select * from t2")
+        self.assertListEqual(ca.fetchall(), [("att1",),("att2",),("att3",),("att4",)])
+        c1.execute("select * from sec.t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",),("att4",)])
+
+        # on 32bit Windows we cannot open 3 litetree dbs at the same time ...
+        if platform.system() == "Windows" and platform.architecture()[0] == "32bit":
+            conn2.close()
+            # ... unless we use the max_db_size URI parameter when opening them, like this:
+            #ca.execute("attach database 'file:test4.db?branches=on&max_db_size=134217728' as ext")
+
+        ca.execute("attach database 'file:test4.db?branches=on' as ext")
+
+        ca.execute("select * from t1")
+        self.assertListEqual(ca.fetchall(), [("first",)])
+        ca.execute("select * from ext.t1")
+        self.assertListEqual(ca.fetchall(), [("first",)])
+
+        ca.execute("pragma branches")
+        self.assertListEqual(ca.fetchall(), [])
+        ca.execute("pragma ext.branches")
+        self.assertListEqual(ca.fetchall(), [("master",),("dev",)])
+
+        ca.execute("pragma branch")
+        self.assertListEqual(ca.fetchall(), [])
+        ca.execute("pragma ext.branch")
+        self.assertEqual(ca.fetchone()[0], "master")
+
+        ca.execute("pragma ext.branch=dev")
+        ca.execute("pragma ext.branch")
+        self.assertEqual(ca.fetchone()[0], "dev")
+
+        ca.execute("select * from t1")
+        self.assertListEqual(ca.fetchall(), [("first",),("second",)])
+        ca.execute("select * from ext.t1")
+        self.assertListEqual(ca.fetchall(), [("first",),("second",)])
+
+        ca.execute("insert into t1 values ('3rd')")
+        connat.commit()
+        ca.execute("insert into ext.t1 values ('4th')")
+        connat.commit()
+
+        ca.execute("pragma ext.branch=master")
+        ca.execute("pragma ext.branch")
+        self.assertEqual(ca.fetchone()[0], "master")
+
+        ca.execute("select * from t1")
+        self.assertListEqual(ca.fetchall(), [("first",)])
+        ca.execute("select * from ext.t1")
+        self.assertListEqual(ca.fetchall(), [("first",)])
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("3rd",),("4th",)])
+
+        c1.execute("pragma branch=master")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+
+        conn1.close()
+        conn2.close()
+        connat.close()
+
+
+    def test12_temporary_db(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+        c1 = conn1.cursor()
+
+        c1.execute("pragma page_size")
+        self.assertEqual(c1.fetchone()[0], 4096)
+
+        c1.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        # make modifications on connection 1
+        c1.execute("create table t1(name)")
+        conn1.commit()
+        c1.execute("insert into t1 values ('first')")
+        conn1.commit()
+
+        # attach a temporary db
+        c1.execute("attach database '' as tmp")
+
+        c1.execute("pragma tmp.page_size")
+        self.assertEqual(c1.fetchone()[0], 4096)
+
+        c1.execute("pragma tmp.journal_mode")
+        self.assertEqual(c1.fetchone()[0], "delete")
+
+        c1.execute("create table tmp.t2 (name)")
+        c1.execute("insert into t2 values ('att1')")
+        c1.execute("insert into t2 values ('att2')")
+        conn1.commit()
+
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",)])
+
+        # create a new branch on connection 1
+        c1.execute("pragma new_branch=dev at master.2")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("master",),("dev",)])
+
+        c1.execute("insert into t1 values ('second')")
+        conn1.commit()
+
+        c1.execute("insert into t2 values ('att3')")
+        conn1.commit()
+
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+        c1.execute("select * from tmp.t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+
+        c1.execute("pragma branch=master")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+        c1.execute("select * from tmp.t2")
+        self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+
+        conn1.close()
+
+
+    def test13_forward_merge(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('file:test4.db?branches=on')
         conn2 = sqlite3.connect('file:test4.db?branches=on')
@@ -1302,7 +1542,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test12_normal_sqlite(self):
+    def test21_normal_sqlite(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('test4.db')
         conn2 = sqlite3.connect('test4.db')
