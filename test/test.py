@@ -1774,6 +1774,38 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
+    def test20_closed_connection(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        c1 = conn1.cursor()
+
+        c1.execute("create table if not exists foo (name)")
+        conn1.commit()
+        c1.execute("insert into foo values ('first')")
+        conn1.commit()
+        c1.execute("insert into foo values ('second')")
+        conn1.commit()
+        c1.execute("pragma branch_info(master)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 3)
+
+        # open another connection, read from a previous commit and close the connection
+        conn2 = sqlite3.connect('file:test4.db?branches=on')
+        c2 = conn2.cursor()
+        c2.execute("pragma branch=master.2")
+        c2.execute("select * from foo")
+        self.assertListEqual(c2.fetchall(), [("first",)])
+        conn2.close()
+
+	# try to write and read on the first connection
+        c1.execute("insert into foo values ('third')")
+        conn1.commit()
+        c1.execute("select * from foo")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+
+        conn1.close()
+
+
     def test21_normal_sqlite(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('test4.db')
