@@ -62,6 +62,11 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c.fetchall(), [("first",),("second",)])
 
         c.execute("pragma new_branch=test at master.2")
+
+        # it should deny the creation of another branch with the same name
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test at master.2")
+
         c.execute("pragma branches")
         self.assertListEqual(c.fetchall(), [("master",),("test",)])
         c.execute("pragma branch")
