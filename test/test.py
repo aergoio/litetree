@@ -62,6 +62,11 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c.fetchall(), [("first",),("second",)])
 
         c.execute("pragma new_branch=test at master.2")
+
+        # it should deny the creation of another branch with the same name
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test at master.2")
+
         c.execute("pragma branches")
         self.assertListEqual(c.fetchall(), [("master",),("test",)])
         c.execute("pragma branch")
@@ -986,6 +991,817 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
         c1.execute("select * from tmp.t2")
         self.assertListEqual(c1.fetchall(), [("att1",),("att2",),("att3",)])
+
+        conn1.close()
+
+
+    def test13_forward_merge(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn2 = sqlite3.connect('file:test4.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
+        c1 = conn1.cursor()
+        c2 = conn2.cursor()
+
+        c1.execute("pragma page_size")
+        c2.execute("pragma page_size")
+        self.assertEqual(c1.fetchone()[0], 4096)
+        self.assertEqual(c2.fetchone()[0], 4096)
+
+        c1.execute("pragma journal_mode")
+        c2.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+        self.assertEqual(c2.fetchone()[0], "branches")
+
+        c1.execute("pragma branch")
+        c2.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+        self.assertEqual(c2.fetchone()[0], "master")
+
+        # make modifications on connection 1
+        c1.execute("create table t1(name)")
+        conn1.commit()
+        c1.execute("insert into t1 values ('first')")
+        conn1.commit()
+
+        # the new modifications should appear on connection 2
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",)])
+
+        # create a new branch on connection 1
+        c1.execute("pragma new_branch=dev at master.2")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("master",),("dev",)])
+
+        # the new branch should appear on connection 2
+        c2.execute("Pragma branches")
+        self.assertListEqual(c2.fetchall(), [("master",),("dev",)])
+
+        # add new commits to the child branch
+        c1.execute("insert into t1 values ('second')")
+        conn1.commit()
+        c1.execute("insert into t1 values ('third')")
+        conn1.commit()
+        c1.execute("insert into t1 values ('fourth')")
+        conn1.commit()
+        c1.execute("insert into t1 values ('fifth')")
+        conn1.commit()
+
+        # read the db on conn2 in the master branch
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",)])
+
+        # move to the child branch
+        c2.execute("pragma branch=dev")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "dev")
+
+        # read the db on conn2 in the dev branch
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+
+        # create 2 new branches starting at the child (dev) branch
+
+        # branch test1
+        c1.execute("pragma new_branch=test1 at dev.3")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "test1")
+
+        c1.execute("insert into t1 values ('from test1')")
+        conn1.commit()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("from test1",)])
+
+        # branch test2
+        c1.execute("pragma new_branch=test2 at dev.6")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "test2")
+
+        c1.execute("insert into t1 values ('from test2')")
+        conn1.commit()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("from test2",)])
+
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("master",),("dev",),("test1",),("test2",)])
+
+        # go back to the dev branch
+        c1.execute("pragma branch=dev")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
+
+
+        # check the branch info
+
+        c1.execute("pragma branch_info(master)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 2)
+
+        c1.execute("pragma branch_info(dev)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 2)
+        self.assertEqual(obj["total_commits"], 6)
+
+        c1.execute("pragma branch_info(test1)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "dev")
+        self.assertEqual(obj["source_commit"], 3)
+        self.assertEqual(obj["total_commits"], 4)
+
+        c1.execute("pragma branch_info(test2)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "dev")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+        # check also on conn2
+
+        c2.execute("pragma branch_info(master)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 2)
+
+        c2.execute("pragma branch_info(dev)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 2)
+        self.assertEqual(obj["total_commits"], 6)
+
+        c2.execute("pragma branch_info(test1)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "dev")
+        self.assertEqual(obj["source_commit"], 3)
+        self.assertEqual(obj["total_commits"], 4)
+
+        c2.execute("pragma branch_info(test2)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "dev")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+
+        # test invalid parameters
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev 0")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev -1")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev -2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.0")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.1")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.10")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.3 1")
+
+        # move 2 commits from child branch to master
+        c1.execute("pragma branch_merge --forward master dev 2")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+
+
+        # check if the commits were moved
+
+        c1.execute("pragma branch_info(master)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 4)
+
+        c1.execute("pragma branch_info(dev)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 4)
+        self.assertEqual(obj["total_commits"], 6)
+
+        c1.execute("pragma branch_info(test1)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 3)
+        self.assertEqual(obj["total_commits"], 4)
+
+        c1.execute("pragma branch_info(test2)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "dev")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+        # the conn 2 should reload the array
+
+        c2.execute("pragma branch_info(master)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 4)
+
+        c2.execute("pragma branch_info(dev)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 4)
+        self.assertEqual(obj["total_commits"], 6)
+
+        c2.execute("pragma branch_info(test1)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 3)
+        self.assertEqual(obj["total_commits"], 4)
+
+        c2.execute("pragma branch_info(test2)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "dev")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+
+        # read the db on conn2 in the dev branch
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        # move to the parent branch
+        c2.execute("pragma branch=master")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "master")
+
+        # it must have 2 more rows on t1
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",)])
+
+        # move to branch test1
+        c2.execute("pragma branch=test1")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "test1")
+
+        # it must have the same records
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("from test1",)])
+
+        # move to branch test2
+        c2.execute("pragma branch=test2")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "test2")
+
+        # it must have the same records
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("from test2",)])
+
+        # move to the child branch
+        c2.execute("pragma branch=dev")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "dev")
+
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+
+        # read the db on conn1 in the dev branch
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        # move to the parent branch
+        c1.execute("pragma branch=master")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        # it must have 2 more rows on t1
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+
+        # move to branch test1
+        c1.execute("pragma branch=test1")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "test1")
+
+        # it must have the same records
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("from test1",)])
+
+        # move to branch test2
+        c1.execute("pragma branch=test2")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "test2")
+
+        # it must have the same records
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("from test2",)])
+
+        # move to the child branch
+        c1.execute("pragma branch=dev")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+
+        # now test the merge while at the parent branch
+        c1.execute("pragma branch=master")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+
+        # test invalid parameters
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.1")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.3")
+        with self.assertRaises(sqlite3.OperationalError):
+            c1.execute("pragma branch_merge --forward master dev.4")
+
+        # move up to commit 6 from child branch to master
+        c1.execute("pragma branch_merge --forward master dev.6")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+
+
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        c1.execute("pragma branch=dev")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
+
+
+        # check if the commits were moved
+
+        c1.execute("pragma branch_info(master)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 6)
+
+        c1.execute("pragma branch_info(dev)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 6)
+
+        c1.execute("pragma branch_info(test1)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 3)
+        self.assertEqual(obj["total_commits"], 4)
+
+        c1.execute("pragma branch_info(test2)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+        # the conn 2 should reload the array
+
+        c2.execute("pragma branch_info(master)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 6)
+
+        c2.execute("pragma branch_info(dev)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 6)
+
+        c2.execute("pragma branch_info(test1)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 3)
+        self.assertEqual(obj["total_commits"], 4)
+
+        c2.execute("pragma branch_info(test2)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+
+        # read the db on conn2 in the dev branch
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        # move to the parent branch
+        c2.execute("pragma branch=master")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "master")
+
+        # read the db on conn2 in the master branch
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        # move to branch test1
+        c2.execute("pragma branch=test1")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "test1")
+
+        # it must have the same records
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("from test1",)])
+
+        # move to branch test2
+        c2.execute("pragma branch=test2")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "test2")
+
+        # it must have the same records
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("from test2",)])
+
+        # move to the child branch
+        c2.execute("pragma branch=dev")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "dev")
+
+        # read the db on conn2 in the dev branch
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+
+        # read the db on conn2 in the dev branch
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        # move to the parent branch
+        c1.execute("pragma branch=master")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+
+        # read the db on conn2 in the master branch
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        # move to branch test1
+        c1.execute("pragma branch=test1")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "test1")
+
+        # it must have the same records
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("from test1",)])
+
+        # move to branch test2
+        c1.execute("pragma branch=test2")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "test2")
+
+        # it must have the same records
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("from test2",)])
+
+        # move to the child branch
+        c1.execute("pragma branch=dev")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "dev")
+
+        # read the db on conn2 in the dev branch
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+
+        # create a new table on connection 1
+        c1.execute("create table t2(name)")
+        conn1.commit()
+
+        # the conn 2 should reload the array
+
+        c2.execute("pragma branch_info(master)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 6)
+
+        c2.execute("pragma branch_info(dev)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+
+        # the new table should appear on connection 2
+        c2.execute("select name from sqlite_master")
+        self.assertListEqual(c2.fetchall(), [("t1",),("t2",)])
+
+
+        conn1.close()
+        conn2.close()
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn2 = sqlite3.connect('file:test4.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
+        c1 = conn1.cursor()
+        c2 = conn2.cursor()
+
+        c2.execute("pragma branches")
+        self.assertListEqual(c2.fetchall(), [("master",),("dev",),("test1",),("test2",)])
+
+        c2.execute("pragma branch_info(master)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 6)
+
+        c2.execute("pragma branch_info(dev)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+        c2.execute("pragma branch_info(test1)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 3)
+        self.assertEqual(obj["total_commits"], 4)
+
+        c2.execute("pragma branch_info(test2)")
+        obj = json.loads(c2.fetchone()[0])
+        self.assertEqual(obj["source_branch"], "master")
+        self.assertEqual(obj["source_commit"], 6)
+        self.assertEqual(obj["total_commits"], 7)
+
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",)])
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        c1.execute("pragma branch=test1")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "test1")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("from test1",)])
+
+        c1.execute("pragma branch=test2")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "test2")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("from test2",)])
+
+        c2.execute("pragma branch=dev")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "dev")
+
+        c2.execute("select name from sqlite_master")
+        self.assertListEqual(c2.fetchall(), [("t1",),("t2",)])
+
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        conn1.close()
+        conn2.close()
+
+
+    def test14_forward_merge(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn2 = sqlite3.connect('file:test4.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
+        c1 = conn1.cursor()
+        c2 = conn2.cursor()
+
+        c1.execute("pragma page_size")
+        c2.execute("pragma page_size")
+        self.assertEqual(c1.fetchone()[0], 4096)
+        self.assertEqual(c2.fetchone()[0], 4096)
+
+        c1.execute("pragma journal_mode")
+        c2.execute("pragma journal_mode")
+        self.assertEqual(c1.fetchone()[0], "branches")
+        self.assertEqual(c2.fetchone()[0], "branches")
+
+        c1.execute("pragma branch")
+        c2.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "master")
+        self.assertEqual(c2.fetchone()[0], "master")
+
+        c1.execute("create table t1(name)")
+        conn1.commit()
+
+        c1.execute("pragma new_branch=b2 at master.1")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "b2")
+
+        c1.execute("insert into t1 values ('first')")
+        conn1.commit()
+
+        c1.execute("pragma new_branch=b3 at b2")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "b3")
+
+        c1.execute("insert into t1 values ('second')")
+        conn1.commit()
+
+        c1.execute("pragma new_branch=b4 at b3")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "b4")
+
+        c1.execute("insert into t1 values ('third')")
+        conn1.commit()
+
+        c1.execute("pragma new_branch=b5 at b4")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "b5")
+
+        c1.execute("insert into t1 values ('fourth')")
+        conn1.commit()
+
+        c1.execute("pragma new_branch=last at b5")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "last")
+
+        c1.execute("insert into t1 values ('fifth')")
+        conn1.commit()
+
+
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("master",),("b2",),("b3",),("b4",),("b5",),("last",)])
+
+        c2.execute("Pragma branches")
+        self.assertListEqual(c2.fetchall(), [("master",),("b2",),("b3",),("b4",),("b5",),("last",)])
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [])
+
+        c2.execute("pragma branch=last")
+        c2.execute("pragma branch")
+        self.assertEqual(c2.fetchone()[0], "last")
+
+        c2.execute("select * from t1")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+
+        # extend branch b3
+        c1.execute("pragma branch=b3")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "b3")
+
+        c1.execute("insert into t1 values ('from b3')")
+        conn1.commit()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("from b3",)])
+
+        c1.execute("pragma branch=last")
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "last")
+
+
+        # check the branch info
+
+        for c in (c1,c2):
+           c.execute("pragma branch_info(master)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["total_commits"], 1)
+
+           c.execute("pragma branch_info(b2)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["source_branch"], "master")
+           self.assertEqual(obj["source_commit"], 1)
+           self.assertEqual(obj["total_commits"], 2)
+
+           c.execute("pragma branch_info(b3)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["source_branch"], "b2")
+           self.assertEqual(obj["source_commit"], 2)
+           self.assertEqual(obj["total_commits"], 4)
+
+           c.execute("pragma branch_info(b4)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["source_branch"], "b3")
+           self.assertEqual(obj["source_commit"], 3)
+           self.assertEqual(obj["total_commits"], 4)
+
+
+        # test forward merge using the last of a chain of branches
+        c1.execute("pragma branch_merge --forward master last 2")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+
+
+        # b2 should be deleted
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("master",),("b3",),("b4",),("b5",),("last",)])
+        c2.execute("Pragma branches")
+        self.assertListEqual(c2.fetchall(), [("master",),("b3",),("b4",),("b5",),("last",)])
+
+
+        # test forward merge using the last of a chain of branches
+        c1.execute("pragma branch_merge --forward master last")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+
+
+        # check if the commits were moved
+
+        for c in (c1,c2):
+           c.execute("pragma branch_info(master)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["total_commits"], 6)
+
+           c.execute("pragma branch_info(b3)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["source_branch"], "master")
+           self.assertEqual(obj["source_commit"], 3)
+           self.assertEqual(obj["total_commits"], 4)
+
+           c.execute("pragma branch_info(last)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["source_branch"], "master")
+           self.assertEqual(obj["source_commit"], 6)
+           self.assertEqual(obj["total_commits"], 6)
+
+
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("master",),("b3",),("last",)])
+
+        c2.execute("Pragma branches")
+        self.assertListEqual(c2.fetchall(), [("master",),("b3",),("last",)])
+
+
+        # test persistence
+
+        conn1.close()
+        conn2.close()
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn2 = sqlite3.connect('file:test4.db?branches=on')
+        if platform.system() == "Darwin":
+            conn1.isolation_level = None  # enables autocommit mode
+            conn2.isolation_level = None  # enables autocommit mode
+        c1 = conn1.cursor()
+        c2 = conn2.cursor()
+
+
+        for c in (c1,c2):
+           c.execute("pragma branch_info(master)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["total_commits"], 6)
+
+           c.execute("pragma branch_info(b3)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["source_branch"], "master")
+           self.assertEqual(obj["source_commit"], 3)
+           self.assertEqual(obj["total_commits"], 4)
+
+           c.execute("pragma branch_info(last)")
+           obj = json.loads(c.fetchone()[0])
+           self.assertEqual(obj["source_branch"], "master")
+           self.assertEqual(obj["source_commit"], 6)
+           self.assertEqual(obj["total_commits"], 6)
+
+           c.execute("pragma branches")
+           self.assertListEqual(c.fetchall(), [("master",),("b3",),("last",)])
+
+           c.execute("pragma branch")
+           self.assertEqual(c.fetchone()[0], "master")
+
+           c.execute("select * from t1")
+           self.assertListEqual(c.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+           c.execute("pragma branch=last")
+           c.execute("pragma branch")
+           self.assertEqual(c.fetchone()[0], "last")
+
+           c.execute("select * from t1")
+           self.assertListEqual(c.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",)])
+
+
+        conn1.close()
+        conn2.close()
+
+
+    def test20_closed_connection(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        c1 = conn1.cursor()
+
+        c1.execute("create table if not exists foo (name)")
+        conn1.commit()
+        c1.execute("insert into foo values ('first')")
+        conn1.commit()
+        c1.execute("insert into foo values ('second')")
+        conn1.commit()
+        c1.execute("pragma branch_info(master)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 3)
+
+        # open another connection, read from a previous commit and close the connection
+        conn2 = sqlite3.connect('file:test4.db?branches=on')
+        c2 = conn2.cursor()
+        c2.execute("pragma branch=master.2")
+        c2.execute("select * from foo")
+        self.assertListEqual(c2.fetchall(), [("first",)])
+        conn2.close()
+
+	# try to write and read on the first connection
+        c1.execute("insert into foo values ('third')")
+        conn1.commit()
+        c1.execute("select * from foo")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
 
         conn1.close()
 
