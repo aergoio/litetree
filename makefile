@@ -124,7 +124,7 @@ endif
 clean:
 	rm -f *.o $(LIBRARY) $(LIBNICK1) $(LIBNICK2) $(LIBNICK3) $(LIBNICK4) $(SSHELL)
 
-test: test/test.py
+test: test/test.py test/test-64bit-commit-ids.py test/varint.py
 ifeq ($(OS),Windows_NT)
 ifeq ($(PY_HOME),)
 	@echo "PY_HOME is not set"
@@ -133,6 +133,7 @@ else
 	cp litetree-0.1.dll $(PY_HOME)/DLLs/sqlite3.dll
 	cp $(LMDBPATH)/lmdb.dll $(PY_HOME)/DLLs/lmdb.dll
 	cd test && python test.py -v
+	cd test && python test-64bit-commit-ids.py -v
 endif
 else ifeq ($(OS),OSX)
 ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
@@ -146,8 +147,10 @@ endif
 	cd pysqlite && sudo python setup.py install
 endif
 	cd test && python test.py -v
+	cd test && python test-64bit-commit-ids.py -v
 else
 	cd test && LD_LIBRARY_PATH=.. python test.py -v
+	cd test && LD_LIBRARY_PATH=.. python test-64bit-commit-ids.py -v
 endif
 
 benchmark: test/benchmark.py
