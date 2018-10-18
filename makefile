@@ -132,16 +132,17 @@ else
 	cd $(PY_HOME)/DLLs && [ ! -f sqlite3-orig.dll ] && mv sqlite3.dll sqlite3-orig.dll || true
 	cp litetree-0.1.dll $(PY_HOME)/DLLs/sqlite3.dll
 	cp $(LMDBPATH)/lmdb.dll $(PY_HOME)/DLLs/lmdb.dll
-	mkdir temp && cd temp && easy_install lmdb
+	mkdir temp && cd temp && pip install lmdb
 	cd test && python test.py -v
 	cd test && python test-64bit-commit-ids.py -v
 endif
 else	# not Windows
 ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
-	git clone https://github.com/dw/py-lmdb
+	sudo easy_install cffi
+	git clone --depth=1 https://github.com/dw/py-lmdb
 	cd py-lmdb && sudo LMDB_FORCE_SYSTEM=1 python setup.py install
 ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
-	mkdir temp && cd temp && easy_install lmdb
+	mkdir temp && cd temp && sudo easy_install lmdb
 endif
 endif
 ifeq ($(OS),OSX)
@@ -149,7 +150,7 @@ ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
 ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
 	@echo "run 'sudo make install' first"
 endif
-	git clone https://github.com/ghaering/pysqlite
+	git clone --depth=1 https://github.com/ghaering/pysqlite
 	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
 	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
 	cd pysqlite && python setup.py build
@@ -178,7 +179,7 @@ ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
 ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
 	@echo "run 'sudo make install' first"
 endif
-	git clone https://github.com/ghaering/pysqlite
+	git clone --depth=1 https://github.com/ghaering/pysqlite
 	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
 	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
 	cd pysqlite && python setup.py build
