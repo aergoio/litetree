@@ -132,17 +132,21 @@ else
 	cd $(PY_HOME)/DLLs && [ ! -f sqlite3-orig.dll ] && mv sqlite3.dll sqlite3-orig.dll || true
 	cp litetree-0.1.dll $(PY_HOME)/DLLs/sqlite3.dll
 	cp $(LMDBPATH)/lmdb.dll $(PY_HOME)/DLLs/lmdb.dll
-	mkdir temp && cd temp && pip install lmdb
+	cd test && python -mpip install lmdb
 	cd test && python test.py -v
 	cd test && python test-64bit-commit-ids.py -v
 endif
 else	# not Windows
 ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
 	sudo easy_install cffi
-	git clone --depth=1 https://github.com/dw/py-lmdb
-	cd py-lmdb && sudo LMDB_FORCE_SYSTEM=1 python setup.py install
+	cd test && sudo easy_install lmdb
 ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
-	mkdir temp && cd temp && sudo easy_install lmdb
+	git clone --depth=1 https://github.com/dw/py-lmdb
+	cd py-lmdb && sudo LMDB_FORCE_CPYTHON=1 python setup.py install
+ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
+	sudo python -c "import cffi"
+	sudo python -c "import lmdb"
+endif
 endif
 endif
 ifeq ($(OS),OSX)
