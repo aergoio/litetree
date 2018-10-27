@@ -234,9 +234,7 @@ make benchmark
 
 Number of branches: 1024 branches  (can be increased)
 
-Number of commits per branch: 2^32 = 4,294,967,295 commits
-
-- This value can be increased to 64 bits
+Number of commits per branch: 2^64 = 18,446,744,073,709,551,615 commits
 
 Concurrent db connections to the same db: XXX readers
 

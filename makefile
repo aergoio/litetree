@@ -124,7 +124,7 @@ endif
 clean:
 	rm -f *.o $(LIBRARY) $(LIBNICK1) $(LIBNICK2) $(LIBNICK3) $(LIBNICK4) $(SSHELL)
 
-test: test/test.py
+test: test/test.py test/test-64bit-commit-ids.py test/varint.py
 ifeq ($(OS),Windows_NT)
 ifeq ($(PY_HOME),)
 	@echo "PY_HOME is not set"
@@ -132,22 +132,40 @@ else
 	cd $(PY_HOME)/DLLs && [ ! -f sqlite3-orig.dll ] && mv sqlite3.dll sqlite3-orig.dll || true
 	cp litetree-0.1.dll $(PY_HOME)/DLLs/sqlite3.dll
 	cp $(LMDBPATH)/lmdb.dll $(PY_HOME)/DLLs/lmdb.dll
+	cd test && python -mpip install lmdb
 	cd test && python test.py -v
+	cd test && python test-64bit-commit-ids.py -v
 endif
-else ifeq ($(OS),OSX)
+else	# not Windows
+ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
+	sudo easy_install cffi
+	cd test && sudo easy_install lmdb
+ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
+	git clone --depth=1 https://github.com/dw/py-lmdb
+	cd py-lmdb && sudo LMDB_FORCE_CPYTHON=1 python setup.py install
+ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
+	sudo python -c "import cffi"
+	sudo python -c "import lmdb"
+endif
+endif
+endif
+ifeq ($(OS),OSX)
 ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
 ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
 	@echo "run 'sudo make install' first"
 endif
-	git clone https://github.com/ghaering/pysqlite
+	git clone --depth=1 https://github.com/ghaering/pysqlite
 	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
 	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
 	cd pysqlite && python setup.py build
 	cd pysqlite && sudo python setup.py install
 endif
 	cd test && python test.py -v
-else
+	cd test && python test-64bit-commit-ids.py -v
+else	# Linux
 	cd test && LD_LIBRARY_PATH=.. python test.py -v
+	cd test && LD_LIBRARY_PATH=.. python test-64bit-commit-ids.py -v
+endif
 endif
 
 benchmark: test/benchmark.py
@@ -165,7 +183,7 @@ ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
 ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
 	@echo "run 'sudo make install' first"
 endif
-	git clone https://github.com/ghaering/pysqlite
+	git clone --depth=1 https://github.com/ghaering/pysqlite
 	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
 	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
 	cd pysqlite && python setup.py build
