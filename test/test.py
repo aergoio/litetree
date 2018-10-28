@@ -1774,6 +1774,129 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
+    def test18_savepoints(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn1.isolation_level = None  # disables wrapper autocommit
+        c1 = conn1.cursor()
+
+        # to enforce cache spill
+        c1.execute("pragma cache_spill=true")
+        c1.execute("pragma cache_size=2")
+
+        c1.execute("create table t1 (name)")
+        conn1.commit()
+        c1.execute("insert into t1 values ('first')")
+        conn1.commit()
+
+        c1.execute("savepoint s1")
+        c1.execute("create table t2 (name)")
+        c1.execute("insert into t1 values ('second')")
+
+        c1.execute("savepoint s2")
+        c1.execute("create table t3 (name)")
+        c1.execute("insert into t1 values ('third')")
+        c1.execute("insert into t2 values ('first')")
+        c1.execute("insert into t3 values ('first')")
+
+        c1.execute("savepoint s3")
+        c1.execute("create table t4 (name)")
+        c1.execute("insert into t1 values ('fourth')")
+
+        c1.execute("savepoint s4")
+        c1.execute("create table t5 (name)")
+        c1.execute("insert into t1 values ('5th')")
+        c1.execute("insert into t2 values ('second')")
+        c1.execute("insert into t3 values ('second')")
+
+        c1.execute("savepoint s5")
+        c1.execute("insert into t1 values ('6th')")
+        c1.execute("insert into t2 values ('third')")
+        c1.execute("insert into t3 values ('third')")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("5th",),("6th",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",),("t5",)])
+
+        c1.execute("rollback to savepoint s5")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("5th",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",),("t5",)])
+
+        c1.execute("release savepoint s5")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("5th",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",),("t5",)])
+
+        c1.execute("rollback to savepoint s4")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",)])
+
+        c1.execute("rollback to savepoint s3")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
+
+        #conn1.commit()
+        c1.execute("release savepoint s1")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
+
+
+        conn1.close()
+
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        c1 = conn1.cursor()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
+
+        conn1.close()
+
+
     def test19_closed_connection(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('file:test4.db?branches=on')
