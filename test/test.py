@@ -232,6 +232,15 @@ class TestSQLiteBranches(unittest.TestCase):
             ("master",5,"insert into t1 values ('fourth');insert into t1 values ('fifth');insert into t1 values ('sixth')",)
         ])
 
+        c.execute("pragma branch_log --delimited[||]")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')||insert into t1 values ('fifth')||insert into t1 values ('sixth')",)
+        ])
+
 
         c.execute("pragma branch_log test")
         self.assertListEqual(c.fetchall(), [
@@ -390,6 +399,16 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c.fetchall(), [
             ("sub-test2",4,"47:insert into t1 values ('from sub-test2 branch'),",)
         ])
+
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --srtict test --netstring")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --strict teest --netstring")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log teest --netstring")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log teest")
 
 
         conn.close()
