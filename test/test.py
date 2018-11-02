@@ -1031,7 +1031,7 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c2.fetchall(), [("first",)])
 
         # create a new branch on connection 1
-        c1.execute("pragma new_branch=dev at master.2")
+        c1.execute("pragma new_branch=dev")
         c1.execute("pragma branch")
         self.assertEqual(c1.fetchone()[0], "dev")
         c1.execute("pragma branches")
