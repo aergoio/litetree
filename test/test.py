@@ -383,9 +383,58 @@ class TestSQLiteBranches(unittest.TestCase):
         c.execute("pragma branches")
         self.assertListEqual(c.fetchall(), [("master",),("b2",),("b3",),("b4",)])
 
-        # try to create a branch in which its name contains a dot
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=  at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= ")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=")
+
         with self.assertRaises(sqlite3.OperationalError):
             c.execute("pragma new_branch=another.branch at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=.test. at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=.test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test. at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch==test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test= at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa=bbb at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=(test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test( at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa(bbb at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=)test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test) at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa)bbb at master.2")
+
+        # invalid characters at beginning
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=-test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=--test at master.2")
+
+        # numbers
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=3 at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=123 at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= 123 at master.2")
 
         c.execute("pragma branch")
         self.assertEqual(c.fetchone()[0], "master")
