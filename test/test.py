@@ -242,6 +242,91 @@ class TestSQLiteBranches(unittest.TestCase):
         ])
 
 
+        c.execute("pragma branch_log master.1-5")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.2-4")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+        ])
+
+        c.execute("pragma branch_log master.1")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+        ])
+
+        c.execute("pragma branch_log master.3")
+        self.assertListEqual(c.fetchall(), [
+            ("master",3,"insert into t1 values ('second')",),
+        ])
+
+        c.execute("pragma branch_log master.5")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.2-5 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("master",3,"32:insert into t1 values ('second'),",),
+            ("master",4,"31:insert into t1 values ('third'),",),
+            ("master",5,"32:insert into t1 values ('fourth'),31:insert into t1 values ('fifth'),31:insert into t1 values ('sixth'),",)
+        ])
+
+        c.execute("pragma branch_log master.2-4 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("master",3,"32:insert into t1 values ('second'),",),
+            ("master",4,"31:insert into t1 values ('third'),",),
+        ])
+
+        c.execute("pragma branch_log master.3 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",3,"32:insert into t1 values ('second'),",),
+        ])
+
+        c.execute("pragma branch_log master.5 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"32:insert into t1 values ('fourth'),31:insert into t1 values ('fifth'),31:insert into t1 values ('sixth'),",)
+        ])
+
+        c.execute("pragma branch_log master.2-5 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth');insert into t1 values ('fifth');insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.3-4 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+        ])
+
+        c.execute("pragma branch_log master.3 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",3,"insert into t1 values ('second')",),
+        ])
+
+        c.execute("pragma branch_log master.5 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth');insert into t1 values ('fifth');insert into t1 values ('sixth')",)
+        ])
+
+
         c.execute("pragma branch_log test")
         self.assertListEqual(c.fetchall(), [
             ("master",1,"create table t1(name)",),
