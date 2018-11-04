@@ -383,9 +383,58 @@ class TestSQLiteBranches(unittest.TestCase):
         c.execute("pragma branches")
         self.assertListEqual(c.fetchall(), [("master",),("b2",),("b3",),("b4",)])
 
-        # try to create a branch in which its name contains a dot
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=  at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= ")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=")
+
         with self.assertRaises(sqlite3.OperationalError):
             c.execute("pragma new_branch=another.branch at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=.test. at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=.test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test. at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch==test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test= at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa=bbb at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=(test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test( at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa(bbb at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=)test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test) at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa)bbb at master.2")
+
+        # invalid characters at beginning
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=-test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=--test at master.2")
+
+        # numbers
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=3 at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=123 at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= 123 at master.2")
 
         c.execute("pragma branch")
         self.assertEqual(c.fetchone()[0], "master")
@@ -1031,7 +1080,7 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c2.fetchall(), [("first",)])
 
         # create a new branch on connection 1
-        c1.execute("pragma new_branch=dev at master.2")
+        c1.execute("pragma new_branch=dev")
         c1.execute("pragma branch")
         self.assertEqual(c1.fetchone()[0], "dev")
         c1.execute("pragma branches")
@@ -1774,7 +1823,130 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test20_closed_connection(self):
+    def test18_savepoints(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn1.isolation_level = None  # disables wrapper autocommit
+        c1 = conn1.cursor()
+
+        # to enforce cache spill
+        c1.execute("pragma cache_spill=true")
+        c1.execute("pragma cache_size=2")
+
+        c1.execute("create table t1 (name)")
+        conn1.commit()
+        c1.execute("insert into t1 values ('first')")
+        conn1.commit()
+
+        c1.execute("savepoint s1")
+        c1.execute("create table t2 (name)")
+        c1.execute("insert into t1 values ('second')")
+
+        c1.execute("savepoint s2")
+        c1.execute("create table t3 (name)")
+        c1.execute("insert into t1 values ('third')")
+        c1.execute("insert into t2 values ('first')")
+        c1.execute("insert into t3 values ('first')")
+
+        c1.execute("savepoint s3")
+        c1.execute("create table t4 (name)")
+        c1.execute("insert into t1 values ('fourth')")
+
+        c1.execute("savepoint s4")
+        c1.execute("create table t5 (name)")
+        c1.execute("insert into t1 values ('5th')")
+        c1.execute("insert into t2 values ('second')")
+        c1.execute("insert into t3 values ('second')")
+
+        c1.execute("savepoint s5")
+        c1.execute("insert into t1 values ('6th')")
+        c1.execute("insert into t2 values ('third')")
+        c1.execute("insert into t3 values ('third')")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("5th",),("6th",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",),("t5",)])
+
+        c1.execute("rollback to savepoint s5")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("5th",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",),("t5",)])
+
+        c1.execute("release savepoint s5")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("5th",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",),("t5",)])
+
+        c1.execute("rollback to savepoint s4")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",)])
+
+        c1.execute("rollback to savepoint s3")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
+
+        #conn1.commit()
+        c1.execute("release savepoint s1")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
+
+
+        conn1.close()
+
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        c1 = conn1.cursor()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
+
+        conn1.close()
+
+
+    def test19_closed_connection(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('file:test4.db?branches=on')
         c1 = conn1.cursor()
@@ -1797,11 +1969,56 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c2.fetchall(), [("first",)])
         conn2.close()
 
-	# try to write and read on the first connection
+        # try to write and read on the first connection
         c1.execute("insert into foo values ('third')")
         conn1.commit()
         c1.execute("select * from foo")
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+
+        conn1.close()
+
+
+    def test20_open_while_writing(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn1.isolation_level = None  # disables wrapper autocommit
+        c1 = conn1.cursor()
+
+        c1.execute("create table if not exists foo (name)")
+        conn1.commit()
+        c1.execute("insert into foo values ('first')")
+        conn1.commit()
+        c1.execute("insert into foo values ('second')")
+        conn1.commit()
+
+        c1.execute("pragma branch_info(master)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 3)
+
+        # start writing on the first connection
+        c1.execute("begin")
+        c1.execute("insert into foo values ('third')")
+
+        # open another connection, read the db and close the connection
+        conn2 = sqlite3.connect('file:test4.db?branches=on')
+        c2 = conn2.cursor()
+        c2.execute("select * from foo")
+        self.assertListEqual(c2.fetchall(), [("first",),("second",)])
+        c2.execute("pragma branch=master.2")
+        c2.execute("select * from foo")
+        self.assertListEqual(c2.fetchall(), [("first",)])
+        conn2.close()
+
+        # continue writing on the first connection
+        c1.execute("insert into foo values ('fourth')")
+        conn1.commit()
+
+        c1.execute("pragma branch_info(master)")
+        obj = json.loads(c1.fetchone()[0])
+        self.assertEqual(obj["total_commits"], 4)
+
+        c1.execute("select * from foo")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",)])
 
         conn1.close()
 
