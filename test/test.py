@@ -486,6 +486,33 @@ class TestSQLiteBranches(unittest.TestCase):
         ])
 
 
+        # sql logs up to the current commit
+
+        c.execute("pragma branch=master.3")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.3")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+        ])
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
+
+        # invalid commands
+
         with self.assertRaises(sqlite3.OperationalError):
             c.execute("pragma branch_log --srtict test --netstring")
         with self.assertRaises(sqlite3.OperationalError):
