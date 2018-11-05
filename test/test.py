@@ -363,6 +363,18 @@ class TestSQLiteBranches(unittest.TestCase):
             ("test",3,"42:insert into t1 values ('from test branch'),",)
         ])
 
+        c.execute("pragma branch_log test.*-2")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",)
+        ])
+
+        c.execute("pragma branch_log test.2-*")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",)
+        ])
+
 
         c.execute("pragma branch_log sub-test2")
         self.assertListEqual(c.fetchall(), [
