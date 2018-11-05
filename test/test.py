@@ -326,6 +326,21 @@ class TestSQLiteBranches(unittest.TestCase):
             ("master",5,"insert into t1 values ('fourth');insert into t1 values ('fifth');insert into t1 values ('sixth')",)
         ])
 
+        c.execute("pragma branch_log master.5 --delimited[\\x0D\\x0A---\\x0d\\x0a]")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth')\x0D\x0A---\x0D\x0Ainsert into t1 values ('fifth')\x0D\x0A---\x0D\x0Ainsert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.5 --delimited[\\n---\\n]")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth')\n---\ninsert into t1 values ('fifth')\n---\ninsert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.5 --delimited[\\t]")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth')\tinsert into t1 values ('fifth')\tinsert into t1 values ('sixth')",)
+        ])
+
 
         c.execute("pragma branch_log test")
         self.assertListEqual(c.fetchall(), [
