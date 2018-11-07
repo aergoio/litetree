@@ -947,7 +947,7 @@ class TestSQLiteBranches(unittest.TestCase):
     def test08_truncate_branch(self):
         # test: truncate in one conn a branch that is in use in another conn, then try to access it in this second conn
         # test: truncate in one conn a branch that is NOT in use in another conn, then try to access it in this second conn
-        
+
         import shutil
         shutil.copy("test.db","test3.db")
 
@@ -979,6 +979,27 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
         self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
 
+        c1.execute("pragma branch_log master")
+        c2.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+        self.assertListEqual(c2.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
         c1.execute("pragma branch_info(master)")
         obj = json.loads(c1.fetchone()[0])
         self.assertGreater(obj["total_commits"], 4)
@@ -990,6 +1011,21 @@ class TestSQLiteBranches(unittest.TestCase):
         c2.execute("select * from t1")
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
         self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",)])
+
+        c1.execute("pragma branch_log master")
+        c2.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+        ])
+        self.assertListEqual(c2.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+        ])
 
         # try to move to a deleted point
         with self.assertRaises(sqlite3.OperationalError):
