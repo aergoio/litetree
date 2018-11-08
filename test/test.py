@@ -701,7 +701,7 @@ class TestSQLiteBranches(unittest.TestCase):
 
         c1.execute("pragma del_branch(test2)")
 
-        c1.execute("prAGma branches")
+        c1.execute("pragma branches")
         self.assertListEqual(c1.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",)])
 
         with self.assertRaises(sqlite3.OperationalError):
@@ -712,6 +712,14 @@ class TestSQLiteBranches(unittest.TestCase):
 
         with self.assertRaises(sqlite3.OperationalError):
             c2.execute("pragma branch")
+
+
+        c1.execute("pragma new_branch=new-one at test")
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",),("new-one",)])
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "new-one")
+
 
 
         '''
@@ -753,8 +761,8 @@ class TestSQLiteBranches(unittest.TestCase):
 
         c1.execute("pragma branches")
         c2.execute("pragma branches")
-        self.assertListEqual(c1.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",)])
-        self.assertListEqual(c2.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",)])
+        self.assertListEqual(c1.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",),("new-one",)])
+        self.assertListEqual(c2.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",),("new-one",)])
 
         c1.execute("pragma branch")
         c2.execute("pragma branch")
