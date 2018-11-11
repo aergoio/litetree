@@ -1101,7 +1101,7 @@ class TestSQLiteBranches(unittest.TestCase):
         c.execute("select * from t1")
         self.assertListEqual(c.fetchall(), build_list(2,8))
 
-        c.execute("pragma merge_commits('master.2-5')")
+        c.execute("pragma merge_commits master.2-5")
 
         c.execute("select * from t1")
         self.assertListEqual(c.fetchall(), build_list(2,8))
@@ -1136,13 +1136,13 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertEqual(c.fetchone()[0], "master.5")
 
         with self.assertRaises(sqlite3.OperationalError):
-            c.execute("pragma merge_commits('master.4-8')")
+            c.execute("pragma merge_commits master.4-8")
 
         c.execute("pragma branch=master.8")
         c.execute("pragma branch")
         self.assertEqual(c.fetchone()[0], "master.8")
 
-        c.execute("pragma merge_commits('master.4-8')")
+        c.execute("pragma merge_commits master.4-8")
 
         for i in range(2,7+1):
             with self.assertRaises(sqlite3.OperationalError):
@@ -1168,7 +1168,7 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertEqual(c.fetchone()[0], "master.8")
 
 
-        c.execute("pragma merge_commits('master.1-3')")
+        c.execute("pragma merge_commits master.1-3")
 
         for i in range(1,7+1):
             with self.assertRaises(sqlite3.OperationalError):
@@ -1182,13 +1182,13 @@ class TestSQLiteBranches(unittest.TestCase):
             self.assertListEqual(c.fetchall(), build_list(2,i))
 
         with self.assertRaises(sqlite3.OperationalError):
-            c.execute("pragma merge_commits('master.7-9')")
+            c.execute("pragma merge_commits master.7-9")
 
         c.execute("pragma branch=master.8")
         c.execute("pragma branch")
         self.assertEqual(c.fetchone()[0], "master.8")
 
-        c.execute("pragma merge_commits('master.9-12')")
+        c.execute("pragma merge_commits master.9-12")
 
         c.execute("pragma branch")
         self.assertEqual(c.fetchone()[0], "master.8")
