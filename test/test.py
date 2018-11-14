@@ -720,6 +720,9 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("pragma branch")
         self.assertEqual(c1.fetchone()[0], "new-one")
 
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("from test branch",)])
+
 
 
         '''
