@@ -2363,6 +2363,17 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select name from sqlite_master")
         self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
 
+        c1.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1 (name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"create table t2 (name)",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",3,"create table t3 (name)",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",3,"insert into t2 values ('first')",),
+            ("master",3,"insert into t3 values ('first')",),
+        ])
 
         conn1.close()
 
@@ -2377,6 +2388,65 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",)])
         c1.execute("select name from sqlite_master")
         self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
+
+        c1.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1 (name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"create table t2 (name)",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",3,"create table t3 (name)",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",3,"insert into t2 values ('first')",),
+            ("master",3,"insert into t3 values ('first')",),
+        ])
+
+        c1.execute("savepoint s1")
+        c1.execute("create table tx (name)")
+        c1.execute("insert into t1 values ('to be deleted')")
+
+        c1.execute("rollback to savepoint s1")
+        c1.execute("create table t4 (name)")
+        c1.execute("insert into t1 values ('fourth')")
+
+        c1.execute("savepoint s2")
+        c1.execute("create table ty (name)")
+        c1.execute("insert into t2 values ('second')")
+
+        c1.execute("rollback to savepoint s2")
+        c1.execute("insert into t4 values ('first')")
+        c1.execute("insert into t2 values ('third')")
+        c1.execute("insert into t3 values ('third')")
+
+        c1.execute("release savepoint s1")
+
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",)])
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",),("third",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",),("third",)])
+        c1.execute("select * from t4")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+
+        c1.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1 (name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"create table t2 (name)",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",3,"create table t3 (name)",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",3,"insert into t2 values ('first')",),
+            ("master",3,"insert into t3 values ('first')",),
+            ("master",4,"create table t4 (name)",),
+            ("master",4,"insert into t1 values ('fourth')",),
+            ("master",4,"insert into t4 values ('first')",),
+            ("master",4,"insert into t2 values ('third')",),
+            ("master",4,"insert into t3 values ('third')",),
+        ])
 
         conn1.close()
 
