@@ -2378,6 +2378,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn1.close()
 
         conn1 = sqlite3.connect('file:test4.db?branches=on')
+        conn1.isolation_level = None  # disables wrapper autocommit
         c1 = conn1.cursor()
 
         c1.execute("select * from t1")
