@@ -132,6 +132,17 @@ class TestSQLiteBranches(unittest.TestCase):
         c.execute("select * from t1")
         self.assertListEqual(c.fetchall(), [("first",),("from test branch",),("from sub-test2 branch",)])
 
+        c.execute("pragma branch=test")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "test")
+
+        values = [("val1",),(2,),(3.3,)]
+        c.executemany("INSERT INTO t1 VALUES (?)", values)
+        conn.commit()
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("from test branch",),("val1",),(2,),(3.3,)])
+
         conn.close()
 
 
@@ -150,7 +161,7 @@ class TestSQLiteBranches(unittest.TestCase):
         obj = json.loads(c.fetchone()[0])
         self.assertEqual(obj["source_branch"], "master")
         self.assertEqual(obj["source_commit"], 2)
-        self.assertEqual(obj["total_commits"], 3)
+        self.assertEqual(obj["total_commits"], 4)
 
         c.execute("pragma branch_info('sub-test1')")
         obj = json.loads(c.fetchone()[0])
@@ -163,6 +174,443 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertEqual(obj["source_branch"], "test")
         self.assertEqual(obj["source_commit"], 3)
         self.assertEqual(obj["total_commits"], 4)
+
+        conn.close()
+
+
+    def test02b_sql_log(self):
+        conn = sqlite3.connect('file:test.db?branches=on')
+        c = conn.cursor()
+
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"21:create table t1(name),",),
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("master",3,"32:insert into t1 values ('second'),",),
+            ("master",4,"31:insert into t1 values ('third'),",),
+            ("master",5,"32:insert into t1 values ('fourth'),31:insert into t1 values ('fifth'),31:insert into t1 values ('sixth'),",)
+        ])
+
+        c.execute("pragma branch_log master --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"21:create table t1(name),",),
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("master",3,"32:insert into t1 values ('second'),",),
+            ("master",4,"31:insert into t1 values ('third'),",),
+            ("master",5,"32:insert into t1 values ('fourth'),31:insert into t1 values ('fifth'),31:insert into t1 values ('sixth'),",)
+        ])
+
+        c.execute("pragma branch_log --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth');insert into t1 values ('fifth');insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth');insert into t1 values ('fifth');insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log --delimited[||]")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')||insert into t1 values ('fifth')||insert into t1 values ('sixth')",)
+        ])
+
+
+        c.execute("pragma branch_log master.1-5")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.2-4")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+        ])
+
+        c.execute("pragma branch_log master.1")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+        ])
+
+        c.execute("pragma branch_log master.3")
+        self.assertListEqual(c.fetchall(), [
+            ("master",3,"insert into t1 values ('second')",),
+        ])
+
+        c.execute("pragma branch_log master.5")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.2-5 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("master",3,"32:insert into t1 values ('second'),",),
+            ("master",4,"31:insert into t1 values ('third'),",),
+            ("master",5,"32:insert into t1 values ('fourth'),31:insert into t1 values ('fifth'),31:insert into t1 values ('sixth'),",)
+        ])
+
+        c.execute("pragma branch_log master.2-4 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("master",3,"32:insert into t1 values ('second'),",),
+            ("master",4,"31:insert into t1 values ('third'),",),
+        ])
+
+        c.execute("pragma branch_log master.3 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",3,"32:insert into t1 values ('second'),",),
+        ])
+
+        c.execute("pragma branch_log master.5 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"32:insert into t1 values ('fourth'),31:insert into t1 values ('fifth'),31:insert into t1 values ('sixth'),",)
+        ])
+
+        c.execute("pragma branch_log master.2-5 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth');insert into t1 values ('fifth');insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.3-4 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+        ])
+
+        c.execute("pragma branch_log master.3 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",3,"insert into t1 values ('second')",),
+        ])
+
+        c.execute("pragma branch_log master.5 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth');insert into t1 values ('fifth');insert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.5 --delimited[\\x0D\\x0A---\\x0d\\x0a]")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth')\x0D\x0A---\x0D\x0Ainsert into t1 values ('fifth')\x0D\x0A---\x0D\x0Ainsert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.5 --delimited[\\n---\\n]")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth')\n---\ninsert into t1 values ('fifth')\n---\ninsert into t1 values ('sixth')",)
+        ])
+
+        c.execute("pragma branch_log master.5 --delimited[\\t]")
+        self.assertListEqual(c.fetchall(), [
+            ("master",5,"insert into t1 values ('fourth')\tinsert into t1 values ('fifth')\tinsert into t1 values ('sixth')",)
+        ])
+
+
+        c.execute("pragma branch_log test")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1')",),
+            ("test",4,"INSERT INTO t1 VALUES (2)",),
+            ("test",4,"INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+        c.execute("pragma branch_log test --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1');INSERT INTO t1 VALUES (2);INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+        c.execute("pragma branch_log test --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"21:create table t1(name),",),
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("test",3,"42:insert into t1 values ('from test branch'),",),
+            ("test",4,"30:INSERT INTO t1 VALUES ('val1'),25:INSERT INTO t1 VALUES (2),27:INSERT INTO t1 VALUES (3.3),",),
+        ])
+
+        c.execute("pragma branch_log test.*-2")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",)
+        ])
+
+        c.execute("pragma branch_log test.2-*")
+        self.assertListEqual(c.fetchall(), [
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1')",),
+            ("test",4,"INSERT INTO t1 VALUES (2)",),
+            ("test",4,"INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+
+        c.execute("pragma branch_log sub-test2")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("sub-test2",4,"insert into t1 values ('from sub-test2 branch')",)
+        ])
+
+        c.execute("pragma branch_log sub-test2 --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("sub-test2",4,"insert into t1 values ('from sub-test2 branch')",)
+        ])
+
+        c.execute("pragma branch_log sub-test2 --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"21:create table t1(name),",),
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("test",3,"42:insert into t1 values ('from test branch'),",),
+            ("sub-test2",4,"47:insert into t1 values ('from sub-test2 branch'),",)
+        ])
+
+
+        # test --strict
+
+        #c.execute("pragma branch_log test --strict")
+        c.execute("pragma branch_log --strict test")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1')",),
+            ("test",4,"INSERT INTO t1 VALUES (2)",),
+            ("test",4,"INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+        c.execute("pragma branch_log --strict test --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1');INSERT INTO t1 VALUES (2);INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+        c.execute("pragma branch_log --strict test --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"42:insert into t1 values ('from test branch'),",),
+            ("test",4,"30:INSERT INTO t1 VALUES ('val1'),25:INSERT INTO t1 VALUES (2),27:INSERT INTO t1 VALUES (3.3),",),
+        ])
+
+
+        # test on a sub-branch
+
+        c.execute("pragma branch=test")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "test")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1')",),
+            ("test",4,"INSERT INTO t1 VALUES (2)",),
+            ("test",4,"INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+        c.execute("pragma branch_log --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1');INSERT INTO t1 VALUES (2);INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+        c.execute("pragma branch_log --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"21:create table t1(name),",),
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("test",3,"42:insert into t1 values ('from test branch'),",),
+            ("test",4,"30:INSERT INTO t1 VALUES ('val1'),25:INSERT INTO t1 VALUES (2),27:INSERT INTO t1 VALUES (3.3),",),
+        ])
+
+        # test --strict on a sub-branch
+
+        c.execute("pragma branch_log --strict")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1')",),
+            ("test",4,"INSERT INTO t1 VALUES (2)",),
+            ("test",4,"INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+        c.execute("pragma branch_log --strict --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1');INSERT INTO t1 VALUES (2);INSERT INTO t1 VALUES (3.3)",),
+        ])
+
+        c.execute("pragma branch_log --strict --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"42:insert into t1 values ('from test branch'),",),
+            ("test",4,"30:INSERT INTO t1 VALUES ('val1'),25:INSERT INTO t1 VALUES (2),27:INSERT INTO t1 VALUES (3.3),",),
+        ])
+
+
+
+        c.execute("pragma branch=test.3")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "test.3")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+        ])
+
+        c.execute("pragma branch_log --strict")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"insert into t1 values ('from test branch')",)
+        ])
+
+        c.execute("pragma branch_log --strict --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"insert into t1 values ('from test branch')",)
+        ])
+
+        c.execute("pragma branch_log --strict --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("test",3,"42:insert into t1 values ('from test branch'),",)
+        ])
+
+
+        # test on another sub-branch
+
+        c.execute("pragma branch=sub-test2")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "sub-test2")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("sub-test2",4,"insert into t1 values ('from sub-test2 branch')",)
+        ])
+
+        c.execute("pragma branch_log --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("sub-test2",4,"insert into t1 values ('from sub-test2 branch')",)
+        ])
+
+        c.execute("pragma branch_log --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"21:create table t1(name),",),
+            ("master",2,"31:insert into t1 values ('first'),",),
+            ("test",3,"42:insert into t1 values ('from test branch'),",),
+            ("sub-test2",4,"47:insert into t1 values ('from sub-test2 branch'),",)
+        ])
+
+        # test --strict on a sub-branch
+
+        c.execute("pragma branch_log --strict")
+        self.assertListEqual(c.fetchall(), [
+            ("sub-test2",4,"insert into t1 values ('from sub-test2 branch')",)
+        ])
+
+        c.execute("pragma branch_log --strict --delimited")
+        self.assertListEqual(c.fetchall(), [
+            ("sub-test2",4,"insert into t1 values ('from sub-test2 branch')",)
+        ])
+
+        c.execute("pragma branch_log --strict --netstring")
+        self.assertListEqual(c.fetchall(), [
+            ("sub-test2",4,"47:insert into t1 values ('from sub-test2 branch'),",)
+        ])
+
+
+        # sql logs up to the current commit
+
+        c.execute("pragma branch=master.3")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.3")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+        ])
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
+
+        # invalid commands
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --srtict test --netstring")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --strict teest --netstring")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log teest --netstring")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log teest")
+
 
         conn.close()
 
@@ -221,7 +669,7 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select * from t1")
         c2.execute("select * from t1")
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
-        self.assertListEqual(c2.fetchall(), [("first",),("from test branch",)])
+        self.assertListEqual(c2.fetchall(), [("first",),("from test branch",),("val1",),(2,),(3.3,)])
 
         c1.execute("pragma branches")
         c2.execute("pragma branches")
@@ -548,7 +996,7 @@ class TestSQLiteBranches(unittest.TestCase):
     def test08_truncate_branch(self):
         # test: truncate in one conn a branch that is in use in another conn, then try to access it in this second conn
         # test: truncate in one conn a branch that is NOT in use in another conn, then try to access it in this second conn
-        
+
         import shutil
         shutil.copy("test.db","test3.db")
 
@@ -580,6 +1028,27 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
         self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
 
+        c1.execute("pragma branch_log master")
+        c2.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+        self.assertListEqual(c2.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",)
+        ])
+
         c1.execute("pragma branch_info(master)")
         obj = json.loads(c1.fetchone()[0])
         self.assertGreater(obj["total_commits"], 4)
@@ -591,6 +1060,21 @@ class TestSQLiteBranches(unittest.TestCase):
         c2.execute("select * from t1")
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
         self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",)])
+
+        c1.execute("pragma branch_log master")
+        c2.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+        ])
+        self.assertListEqual(c2.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+        ])
 
         # try to move to a deleted point
         with self.assertRaises(sqlite3.OperationalError):
@@ -615,7 +1099,7 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("pragma branch")
         self.assertEqual(c1.fetchone()[0], "test")
         c1.execute("select * from t1")
-        self.assertListEqual(c1.fetchall(), [("first",),("from test branch",)])
+        self.assertListEqual(c1.fetchall(), [("first",),("from test branch",),("val1",),(2,),(3.3,)])
 
         # close and reopen the connections
         conn1.close()
@@ -748,7 +1232,7 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertEqual(c1.fetchone()[0], "test")
 
         c1.execute("select * from t1")
-        self.assertListEqual(c1.fetchall(), [("first",),("from test branch",)])
+        self.assertListEqual(c1.fetchall(), [("first",),("from test branch",),("val1",),(2,),(3.3,)])
 
         #with self.assertRaises(sqlite3.OperationalError):
         #    c2.execute("select * from t1")
@@ -774,8 +1258,8 @@ class TestSQLiteBranches(unittest.TestCase):
 
         c1.execute("select * from t1")
         c2.execute("select * from t1")
-        self.assertListEqual(c1.fetchall(), [("first",),("from test branch",)])
-        self.assertListEqual(c2.fetchall(), [("first",),("from test branch",)])
+        self.assertListEqual(c1.fetchall(), [("first",),("from test branch",),("val1",),(2,),(3.3,)])
+        self.assertListEqual(c2.fetchall(), [("first",),("from test branch",),("val1",),(2,),(3.3,)])
 
         conn1.close()
         conn2.close()
@@ -2323,6 +2807,17 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select name from sqlite_master")
         self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
 
+        c1.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1 (name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"create table t2 (name)",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",3,"create table t3 (name)",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",3,"insert into t2 values ('first')",),
+            ("master",3,"insert into t3 values ('first')",),
+        ])
 
         conn1.close()
 
@@ -2337,6 +2832,65 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",)])
         c1.execute("select name from sqlite_master")
         self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
+
+        c1.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1 (name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"create table t2 (name)",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",3,"create table t3 (name)",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",3,"insert into t2 values ('first')",),
+            ("master",3,"insert into t3 values ('first')",),
+        ])
+
+        c1.execute("savepoint s1")
+        c1.execute("create table tx (name)")
+        c1.execute("insert into t1 values ('to be deleted')")
+
+        c1.execute("rollback to savepoint s1")
+        c1.execute("create table t4 (name)")
+        c1.execute("insert into t1 values ('fourth')")
+
+        c1.execute("savepoint s2")
+        c1.execute("create table ty (name)")
+        c1.execute("insert into t2 values ('second')")
+
+        c1.execute("rollback to savepoint s2")
+        c1.execute("insert into t4 values ('first')")
+        c1.execute("insert into t2 values ('third')")
+        c1.execute("insert into t3 values ('third')")
+
+        c1.execute("release savepoint s1")
+
+        c1.execute("select name from sqlite_master")
+        self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",),("t4",)])
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",)])
+        c1.execute("select * from t2")
+        self.assertListEqual(c1.fetchall(), [("first",),("third",)])
+        c1.execute("select * from t3")
+        self.assertListEqual(c1.fetchall(), [("first",),("third",)])
+        c1.execute("select * from t4")
+        self.assertListEqual(c1.fetchall(), [("first",)])
+
+        c1.execute("pragma branch_log master")
+        self.assertListEqual(c1.fetchall(), [
+            ("master",1,"create table t1 (name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"create table t2 (name)",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",3,"create table t3 (name)",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",3,"insert into t2 values ('first')",),
+            ("master",3,"insert into t3 values ('first')",),
+            ("master",4,"create table t4 (name)",),
+            ("master",4,"insert into t1 values ('fourth')",),
+            ("master",4,"insert into t4 values ('first')",),
+            ("master",4,"insert into t2 values ('third')",),
+            ("master",4,"insert into t3 values ('third')",),
+        ])
 
         conn1.close()
 
