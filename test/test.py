@@ -949,6 +949,17 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c.fetchall(), [("new one",)])
 
 
+        # invalid commits numbers
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --add master.5 14:delete from t1, test.4 33:insert into t1 values ('another'), sub-test2.5 33:insert into t1 values ('new one'),")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --add master.5 14:delete from t1, test.7 33:insert into t1 values ('another'), sub-test2.4 33:insert into t1 values ('new one'),")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --add master.7 14:delete from t1, test.4 33:insert into t1 values ('another'), sub-test2.5 33:insert into t1 values ('new one'),")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --add master.6 14:delete from t1, master.7 33:insert into t1 values ('another'), master.8 33:insert into t1 values ('new one'),")
+
+
         conn.close()
 
 
