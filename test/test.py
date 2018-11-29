@@ -779,6 +779,25 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c.fetchall(), [("first",),("2nd",),("3rd",),("4th",),("newest",),("eighth",)])
 
 
+        # test commits in any order
+        c.execute("pragma branch_log --set master.6 30:insert into t1 values ('last'), master.4 32:insert into t1 values ('before'),33:insert into t1 values ('another'), master.3 31:insert into t1 values ('after'),31:insert into t1 values ('third'),")
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('after')",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",4,"insert into t1 values ('before')",),
+            ("master",4,"insert into t1 values ('another')",),
+            ("master",5,"insert into t1 values ('newest')",),
+            ("master",6,"insert into t1 values ('last')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("after",),("third",),("before",),("another",),("newest",),("last",)])
+
+
         conn.close()
 
 
