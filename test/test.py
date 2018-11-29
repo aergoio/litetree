@@ -5,6 +5,7 @@ import unittest
 import json
 import os
 import platform
+import shutil
 
 if platform.system() == "Darwin":
     import pysqlite2.dbapi2 as sqlite3
@@ -22,20 +23,11 @@ def delete_file(filepath):
     if os.path.exists(filepath):
         os.remove(filepath)
 
-delete_file("test.db")
-delete_file("test.db-lock")
-
-delete_file("test2.db")
-delete_file("test2.db-lock")
-
-delete_file("test3.db")
-delete_file("test3.db-lock")
-
-delete_file("test4.db")
 
 class TestSQLiteBranches(unittest.TestCase):
 
     def test01_branches(self):
+        delete_file("test.db")
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
 
@@ -178,7 +170,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn.close()
 
 
-    def test02b_sql_log(self):
+    def test03_sql_log(self):
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
 
@@ -615,7 +607,182 @@ class TestSQLiteBranches(unittest.TestCase):
         conn.close()
 
 
-    def test03_reading_branches_at_the_same_time(self):
+    def test04_edit_commits(self):
+        shutil.copy("test.db","test2.db")
+        conn = sqlite3.connect('file:test2.db?branches=on')
+        c = conn.cursor()
+
+        c.execute("pragma branch_log --add master.5 insert into t1 values ('seventh')")
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('fifth')",),
+            ("master",5,"insert into t1 values ('sixth')",),
+            ("master",5,"insert into t1 values ('seventh')",)
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",),("seventh",)])
+
+
+        c.execute("pragma branch_log --del master.5 2,3")
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('seventh')",)
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("second",),("third",),("fourth",),("seventh",)])
+
+
+        c.execute("pragma branch_log --add master.5 update t1 set name = name || '-';insert into t1 values ('new')")
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('seventh')",),
+            ("master",5,"update t1 set name = name || '-'",),
+            ("master",5,"insert into t1 values ('new')",)
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first-",),("second-",),("third-",),("fourth-",),("seventh-",),("new",)])
+
+
+        c.execute("insert into t1 values ('eighth')")
+        conn.commit()
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('seventh')",),
+            ("master",5,"update t1 set name = name || '-'",),
+            ("master",5,"insert into t1 values ('new')",),
+            ("master",6,"insert into t1 values ('eighth')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first-",),("second-",),("third-",),("fourth-",),("seventh-",),("new",),("eighth",)])
+
+
+        c.execute("pragma branch_log --del master.5 3")
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"insert into t1 values ('fourth')",),
+            ("master",5,"insert into t1 values ('seventh')",),
+            ("master",5,"insert into t1 values ('new')",),
+            ("master",6,"insert into t1 values ('eighth')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("second",),("third",),("fourth",),("seventh",),("new",),("eighth",)])
+
+
+        c.execute("pragma branch_log --set master.5 delete from t1;insert into t1 values ('newest')")
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('second')",),
+            ("master",4,"insert into t1 values ('third')",),
+            ("master",5,"delete from t1",),
+            ("master",5,"insert into t1 values ('newest')",),
+            ("master",6,"insert into t1 values ('eighth')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("newest",),("eighth",)])
+
+
+        # the commit 2 is parent of other branches
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --set master.2 29:insert into t1 values ('1st'), master.3 29:insert into t1 values ('2nd'),")
+
+
+        c.execute("pragma branch_log --set master.3 29:insert into t1 values ('2nd'), master.4 29:insert into t1 values ('3rd'),29:insert into t1 values ('4th'),")
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('2nd')",),
+            ("master",4,"insert into t1 values ('3rd')",),
+            ("master",4,"insert into t1 values ('4th')",),
+            ("master",5,"delete from t1",),
+            ("master",5,"insert into t1 values ('newest')",),
+            ("master",6,"insert into t1 values ('eighth')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("newest",),("eighth",)])
+
+
+        c.execute("pragma branch_log --del master.5 1")
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('2nd')",),
+            ("master",4,"insert into t1 values ('3rd')",),
+            ("master",4,"insert into t1 values ('4th')",),
+            ("master",5,"insert into t1 values ('newest')",),
+            ("master",6,"insert into t1 values ('eighth')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("2nd",),("3rd",),("4th",),("newest",),("eighth",)])
+
+
+        conn.close()
+        conn = sqlite3.connect('file:test2.db?branches=on')
+        c = conn.cursor()
+
+
+        c.execute("pragma branch_log master")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('2nd')",),
+            ("master",4,"insert into t1 values ('3rd')",),
+            ("master",4,"insert into t1 values ('4th')",),
+            ("master",5,"insert into t1 values ('newest')",),
+            ("master",6,"insert into t1 values ('eighth')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("2nd",),("3rd",),("4th",),("newest",),("eighth",)])
+
+
+        conn.close()
+
+
+    def test05_reading_branches_at_the_same_time(self):
         conn1 = sqlite3.connect('file:test.db?branches=on')
         conn2 = sqlite3.connect('file:test.db?branches=on')
         c1 = conn1.cursor()
@@ -680,7 +847,8 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test04_concurrent_access(self):
+    def test06_concurrent_access(self):
+        delete_file("test2.db")
         conn1 = sqlite3.connect('file:test2.db?branches=on')
         conn2 = sqlite3.connect('file:test2.db?branches=on')
         if platform.system() == "Darwin":
@@ -769,7 +937,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test05_single_connection_uri(self):
+    def test07_single_connection_uri(self):
         conn1 = sqlite3.connect('file:test2.db?branches=on&single_connection=true')
         conn2 = sqlite3.connect('file:test2.db?branches=on&single_connection=true')
         c1 = conn1.cursor()
@@ -822,7 +990,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test06_invalid_branch_name(self):
+    def test08_invalid_branch_name(self):
         conn = sqlite3.connect('file:test2.db?branches=on')
         c = conn.cursor()
 
@@ -843,7 +1011,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn.close()
 
 
-    def test07_rename_branch(self):
+    def test09_rename_branch(self):
         conn1 = sqlite3.connect('file:test.db?branches=on')
         conn2 = sqlite3.connect('file:test.db?branches=on')
         c1 = conn1.cursor()
@@ -944,11 +1112,10 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test08_truncate_branch(self):
+    def test10_truncate_branch(self):
         # test: truncate in one conn a branch that is in use in another conn, then try to access it in this second conn
         # test: truncate in one conn a branch that is NOT in use in another conn, then try to access it in this second conn
 
-        import shutil
         shutil.copy("test.db","test3.db")
 
         conn1 = sqlite3.connect('file:test.db?branches=on')
@@ -1075,7 +1242,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test09_delete_branch(self):
+    def test11_delete_branch(self):
         # test: delete a branch and then try to access its children branches (should work)
         # test: delete in one conn then try to access it in another conn (should fail)
         # test: delete in one conn a branch that is in use in another conn (should delete. the current branch on the other conn should be invalid)
@@ -1205,7 +1372,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test10_rollback(self):
+    def test12_rollback(self):
         conn = sqlite3.connect('file:test.db?branches=on')
         conn.isolation_level = None  # enables autocommit mode
         c = conn.cursor()
@@ -1239,7 +1406,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn.close()
 
 
-    def test11_attached_dbs(self):
+    def test13_attached_dbs(self):
         delete_file("test4.db")
         delete_file("attached.db")
 
@@ -1404,7 +1571,7 @@ class TestSQLiteBranches(unittest.TestCase):
         connat.close()
 
 
-    def test12_temporary_db(self):
+    def test14_temporary_db(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('file:test4.db?branches=on')
         if platform.system() == "Darwin":
@@ -1479,7 +1646,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn1.close()
 
 
-    def test13_forward_merge(self):
+    def test15_forward_merge(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('file:test4.db?branches=on')
         conn2 = sqlite3.connect('file:test4.db?branches=on')
@@ -2037,7 +2204,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test14_forward_merge(self):
+    def test16_forward_merge(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('file:test4.db?branches=on')
         conn2 = sqlite3.connect('file:test4.db?branches=on')
