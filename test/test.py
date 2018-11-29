@@ -759,6 +759,7 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c.fetchall(), [("first",),("2nd",),("3rd",),("4th",),("newest",),("eighth",)])
 
 
+        # close and reopen the database to test persistence
         conn.close()
         conn = sqlite3.connect('file:test2.db?branches=on')
         c = conn.cursor()
@@ -796,6 +797,56 @@ class TestSQLiteBranches(unittest.TestCase):
 
         c.execute("select * from t1")
         self.assertListEqual(c.fetchall(), [("first",),("after",),("third",),("before",),("another",),("newest",),("last",)])
+
+
+        # editing commits on separate branches
+        c.execute("pragma branch_log --add master.5 14:delete from t1, test.4 33:insert into t1 values ('another'), sub-test2.4 33:insert into t1 values ('new one'),")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('after')",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",4,"insert into t1 values ('before')",),
+            ("master",4,"insert into t1 values ('another')",),
+            ("master",5,"insert into t1 values ('newest')",),
+            ("master",5,"delete from t1",),
+            ("master",6,"insert into t1 values ('last')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("last",)])
+
+        c.execute("pragma branch=test")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("test",4,"INSERT INTO t1 VALUES ('val1')",),
+            ("test",4,"INSERT INTO t1 VALUES (2)",),
+            ("test",4,"INSERT INTO t1 VALUES (3.3)",),
+            ("test",4,"insert into t1 values ('another')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("from test branch",),("val1",),(2,),(3.3,),("another",)])
+
+        c.execute("pragma branch=sub-test2")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("test",3,"insert into t1 values ('from test branch')",),
+            ("sub-test2",4,"insert into t1 values ('from sub-test2 branch')",),
+            ("sub-test2",4,"insert into t1 values ('new one')",)
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("from test branch",),("from sub-test2 branch",),("new one",)])
 
 
         conn.close()
