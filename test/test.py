@@ -960,6 +960,29 @@ class TestSQLiteBranches(unittest.TestCase):
             c.execute("pragma branch_log --add master.6 14:delete from t1, master.7 33:insert into t1 values ('another'), master.8 33:insert into t1 values ('new one'),")
 
 
+        # test atomicity
+        c.execute("pragma branch=master")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma branch_log --set master.3 29:insert into t1 values ('2nd'), master.4 29:insert into tx values ('xxx'),")
+
+        c.execute("pragma branch_log")
+        self.assertListEqual(c.fetchall(), [
+            ("master",1,"create table t1(name)",),
+            ("master",2,"insert into t1 values ('first')",),
+            ("master",3,"insert into t1 values ('after')",),
+            ("master",3,"insert into t1 values ('third')",),
+            ("master",4,"insert into t1 values ('before')",),
+            ("master",4,"insert into t1 values ('another')",),
+            ("master",5,"insert into t1 values ('newest')",),
+            ("master",5,"insert into t1 values ('another')",),
+            ("master",6,"insert into t1 values ('last')",),
+        ])
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [("first",),("after",),("third",),("before",),("another",),("newest",),("another",),("last",)])
+
+
         conn.close()
 
 
