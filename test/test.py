@@ -182,16 +182,24 @@ class TestSQLiteBranches(unittest.TestCase):
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
 
-        tree = "1-2-3-4-5  master\n" \
-               "  |\n" \
-               "  +-3-4  test\n" \
-               "  | |\n" \
-               "  | `-4  sub-test2\n" \
-               "  |\n" \
-               "  `-  sub-test1"
+        tree1 = "1-2-3-4-5  master\n"  \
+                "  |\n"                \
+                "  +-3-4  test\n"      \
+                "  | |\n"              \
+                "  | `-4  sub-test2\n" \
+                "  |\n"                \
+                "  `-  sub-test1"
+
+        tree2 = "1-2-3-4-5  master\n"  \
+                "  |\n"                \
+                "  +-  sub-test1\n"    \
+                "  |\n"                \
+                "  `-3-4  test\n"      \
+                "    |\n"              \
+                "    `-4  sub-test2"
 
         c.execute("pragma branch_tree")
-        self.assertEqual(c.fetchone()[0], tree)
+        self.assertIn(c.fetchone()[0], [tree1,tree2])
 
         conn.close()
 
