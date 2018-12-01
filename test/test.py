@@ -178,6 +178,24 @@ class TestSQLiteBranches(unittest.TestCase):
         conn.close()
 
 
+    def test02_branch_tree(self):
+        conn = sqlite3.connect('file:test.db?branches=on')
+        c = conn.cursor()
+
+        tree = "1-2-3-4-5  master\n" \
+               "  |\n" \
+               "  +-3-4  test\n" \
+               "  | |\n" \
+               "  | `-4  sub-test2\n" \
+               "  |\n" \
+               "  `-  sub-test1"
+
+        c.execute("pragma branch_tree")
+        self.assertEqual(c.fetchone()[0], tree)
+
+        conn.close()
+
+
     def test02b_sql_log(self):
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
@@ -1320,6 +1338,7 @@ class TestSQLiteBranches(unittest.TestCase):
         ca.execute("select * from t2")
         self.assertListEqual(ca.fetchall(), [("att1",),("att2",)])
 
+        delete_file("test1.db")
         ca.execute("attach database 'test1.db' as temp1")
         ca.execute("detach database temp1")
 
