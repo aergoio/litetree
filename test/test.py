@@ -3000,7 +3000,36 @@ class TestSQLiteBranches(unittest.TestCase):
         conn1.close()
 
 
-    def test21_normal_sqlite(self):
+    def test21_internal_temporary_dbs(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        c1 = conn1.cursor()
+
+        c1.execute("create table t1 (val int)")
+        conn1.commit()
+
+        c1.execute("insert into t1 values (1),(2),(3)")
+        conn1.commit()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [(1,),(2,),(3,)])
+
+        c1.execute("with recursive inc(val) as (values (1) union all select val+1 from t1 where val<10) select val from inc")
+        self.assertListEqual(c1.fetchall(), [(1,),(2,),(3,),(4,)])
+
+        c1.execute("insert into t1 select val from t1")
+        conn1.commit()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [(1,),(2,),(3,),(1,),(2,),(3,)])
+
+        c1.execute("with recursive inc(val) as (values (1) union all select val+1 from inc where val<7) select val from inc")
+        self.assertListEqual(c1.fetchall(), [(1,),(2,),(3,),(4,),(5,),(6,),(7,)])
+
+        conn1.close()
+
+
+    def test22_normal_sqlite(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('test4.db')
         conn2 = sqlite3.connect('test4.db')
