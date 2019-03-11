@@ -133,30 +133,34 @@ It is also possible to truncate a branch at a specific commit, rename a branch, 
 	```
 	PRAGMA rename_branch <old_name> <new_name>
 	```
+- Truncating a branch at a specific commit:
+	```
+	PRAGMA branch_truncate(<name>.<commit>)
+	```
+- Displaying the tree structure:
+	```
+	PRAGMA branch_tree
+	```
 - Retrieving the branch info:
 	```
 	PRAGMA branch_info(<name>)
 	```
-- Truncating a branch at a specific commit:
+- Showing the commit and SQL log/history for a branch:
 	```
-	PRAGMA branch_truncate(<name>.<commit>)
+	PRAGMA branch_log(<name>)
 	```
 
 #### Not yet available
 
 Some of these commands are being developed:
 
-- Showing the commit and SQL log/history for a branch:
+- Modifying a commit:
 	```
-	PRAGMA branch_log(<name>)
+	PRAGMA branch_log [--set|--add|--del] <name> <sql commands>
 	```
 - Showing the diff between 2 branches or commits:
 	```
 	PRAGMA branch_diff <from_branch>[.<commit>] <to_branch>[.<commit>]
-	```
-- Displaying the tree structure in some format:
-	```
-	PRAGMA branch_tree
 	```
 - [Save metadata to each branch and/or commit](https://github.com/aergoio/litetree/wiki/Storing-metadata)
 - [Merging 2 branches](https://github.com/aergoio/litetree/wiki/Merging-branches)
