@@ -75,7 +75,7 @@ litetree-0.1.dll: $(SHORT).o
 
 liblitetree.0.dylib: $(SHORT).o
 	$(CC) -dynamiclib -install_name "$(INSTNAME)" -current_version $(CURR_VERSION) -compatibility_version $(COMPAT_VERSION) $^ -o $@ $(LDFLAGS)
-	#strip $(LIBRARY)
+	strip -x $(LIBRARY)
 	install_name_tool -change liblmdb.so $(LMDBPATH)/liblmdb.so $@
 	ln -sf $(LIBRARY) $(LIBNICK1)
 	ln -sf $(LIBRARY) $(LIBNICK2)

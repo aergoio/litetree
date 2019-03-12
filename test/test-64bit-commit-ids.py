@@ -13,7 +13,7 @@ if platform.system() == "Darwin":
 else:
     import sqlite3
 
-sqlite_version = "3.24.0"
+sqlite_version = "3.27.2"
 
 if sqlite3.sqlite_version != sqlite_version:
     print "wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version
@@ -241,6 +241,12 @@ class Test64bitCommitIds(unittest.TestCase):
         self.assertEqual(obj["total_commits"], v64bit_increment + 4)
 
         conn.close()
+
+
+    @classmethod
+    def tearDownClass(self):
+        delete_file("test.db")
+        delete_file("test.db-lock")
 
 
 if __name__ == '__main__':

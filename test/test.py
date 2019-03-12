@@ -11,12 +11,14 @@ if platform.system() == "Darwin":
 else:
     import sqlite3
 
-sqlite_version = "3.24.0"
+sqlite_version = "3.27.2"
 
 if sqlite3.sqlite_version != sqlite_version:
     print "wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version
     import sys
     sys.exit(1)
+
+omit_logs = False
 
 def delete_file(filepath):
     if os.path.exists(filepath):
@@ -35,7 +37,23 @@ delete_file("test4.db")
 
 class TestSQLiteBranches(unittest.TestCase):
 
+    def test00_read_config(self):
+        delete_file("test.db")
+        delete_file("test.db-lock")
+        conn = sqlite3.connect('file:test.db?branches=on')
+        c = conn.cursor()
+
+        c.execute("pragma branch_log")
+        if c.fetchone()[0] == "disabled":
+            global omit_logs
+            omit_logs = True
+
+        conn.close()
+
+
     def test01_branches(self):
+        delete_file("test.db")
+        delete_file("test.db-lock")
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
 
@@ -205,6 +223,10 @@ class TestSQLiteBranches(unittest.TestCase):
 
 
     def test02b_sql_log(self):
+
+        if omit_logs:
+            self.skipTest("sql log support was not compiled")
+
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
 
@@ -1054,26 +1076,27 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
         self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
 
-        c1.execute("pragma branch_log master")
-        c2.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1(name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",4,"insert into t1 values ('third')",),
-            ("master",5,"insert into t1 values ('fourth')",),
-            ("master",5,"insert into t1 values ('fifth')",),
-            ("master",5,"insert into t1 values ('sixth')",)
-        ])
-        self.assertListEqual(c2.fetchall(), [
-            ("master",1,"create table t1(name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",4,"insert into t1 values ('third')",),
-            ("master",5,"insert into t1 values ('fourth')",),
-            ("master",5,"insert into t1 values ('fifth')",),
-            ("master",5,"insert into t1 values ('sixth')",)
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            c2.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1(name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",4,"insert into t1 values ('third')",),
+                ("master",5,"insert into t1 values ('fourth')",),
+                ("master",5,"insert into t1 values ('fifth')",),
+                ("master",5,"insert into t1 values ('sixth')",)
+            ])
+            self.assertListEqual(c2.fetchall(), [
+                ("master",1,"create table t1(name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",4,"insert into t1 values ('third')",),
+                ("master",5,"insert into t1 values ('fourth')",),
+                ("master",5,"insert into t1 values ('fifth')",),
+                ("master",5,"insert into t1 values ('sixth')",)
+            ])
 
         c1.execute("pragma branch_info(master)")
         obj = json.loads(c1.fetchone()[0])
@@ -1087,20 +1110,21 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
         self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",)])
 
-        c1.execute("pragma branch_log master")
-        c2.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1(name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",4,"insert into t1 values ('third')",),
-        ])
-        self.assertListEqual(c2.fetchall(), [
-            ("master",1,"create table t1(name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",4,"insert into t1 values ('third')",),
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            c2.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1(name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",4,"insert into t1 values ('third')",),
+            ])
+            self.assertListEqual(c2.fetchall(), [
+                ("master",1,"create table t1(name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",4,"insert into t1 values ('third')",),
+            ])
 
         # try to move to a deleted point
         with self.assertRaises(sqlite3.OperationalError):
@@ -2834,17 +2858,18 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select name from sqlite_master")
         self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
 
-        c1.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1 (name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"create table t2 (name)",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",3,"create table t3 (name)",),
-            ("master",3,"insert into t1 values ('third')",),
-            ("master",3,"insert into t2 values ('first')",),
-            ("master",3,"insert into t3 values ('first')",),
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1 (name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"create table t2 (name)",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",3,"create table t3 (name)",),
+                ("master",3,"insert into t1 values ('third')",),
+                ("master",3,"insert into t2 values ('first')",),
+                ("master",3,"insert into t3 values ('first')",),
+            ])
 
         conn1.close()
 
@@ -2861,17 +2886,18 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select name from sqlite_master")
         self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
 
-        c1.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1 (name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"create table t2 (name)",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",3,"create table t3 (name)",),
-            ("master",3,"insert into t1 values ('third')",),
-            ("master",3,"insert into t2 values ('first')",),
-            ("master",3,"insert into t3 values ('first')",),
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1 (name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"create table t2 (name)",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",3,"create table t3 (name)",),
+                ("master",3,"insert into t1 values ('third')",),
+                ("master",3,"insert into t2 values ('first')",),
+                ("master",3,"insert into t3 values ('first')",),
+            ])
 
         c1.execute("savepoint s1")
         c1.execute("create table tx (name)")
@@ -2903,22 +2929,23 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select * from t4")
         self.assertListEqual(c1.fetchall(), [("first",)])
 
-        c1.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1 (name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"create table t2 (name)",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",3,"create table t3 (name)",),
-            ("master",3,"insert into t1 values ('third')",),
-            ("master",3,"insert into t2 values ('first')",),
-            ("master",3,"insert into t3 values ('first')",),
-            ("master",4,"create table t4 (name)",),
-            ("master",4,"insert into t1 values ('fourth')",),
-            ("master",4,"insert into t4 values ('first')",),
-            ("master",4,"insert into t2 values ('third')",),
-            ("master",4,"insert into t3 values ('third')",),
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1 (name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"create table t2 (name)",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",3,"create table t3 (name)",),
+                ("master",3,"insert into t1 values ('third')",),
+                ("master",3,"insert into t2 values ('first')",),
+                ("master",3,"insert into t3 values ('first')",),
+                ("master",4,"create table t4 (name)",),
+                ("master",4,"insert into t1 values ('fourth')",),
+                ("master",4,"insert into t4 values ('first')",),
+                ("master",4,"insert into t2 values ('third')",),
+                ("master",4,"insert into t3 values ('third')",),
+            ])
 
         conn1.close()
 
@@ -3154,6 +3181,27 @@ class TestSQLiteBranches(unittest.TestCase):
 
         conn1.close()
         conn2.close()
+
+
+    @classmethod
+    def tearDownClass(self):
+        delete_file("test.db")
+        delete_file("test.db-lock")
+
+        delete_file("test1.db")
+        delete_file("attached.db")
+
+        delete_file("test2.db")
+        delete_file("test2.db-lock")
+
+        delete_file("test3.db")
+        delete_file("test3.db-lock")
+
+        delete_file("test4.db")
+        delete_file("test4.db-lock")
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
 
 
 if __name__ == '__main__':
