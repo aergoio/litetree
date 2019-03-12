@@ -243,5 +243,11 @@ class Test64bitCommitIds(unittest.TestCase):
         conn.close()
 
 
+    @classmethod
+    def tearDownClass(self):
+        delete_file("test.db")
+        delete_file("test.db-lock")
+
+
 if __name__ == '__main__':
     unittest.main()
