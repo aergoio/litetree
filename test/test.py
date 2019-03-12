@@ -11,7 +11,7 @@ if platform.system() == "Darwin":
 else:
     import sqlite3
 
-sqlite_version = "3.24.0"
+sqlite_version = "3.27.2"
 
 if sqlite3.sqlite_version != sqlite_version:
     print "wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version
