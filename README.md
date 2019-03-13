@@ -149,15 +149,15 @@ It is also possible to truncate a branch at a specific commit, rename a branch, 
 	```
 	PRAGMA branch_log(<name>)
 	```
+- Modifying a commit:
+	```
+	PRAGMA branch_log [--set|--add|--del] <name> <sql commands>
+	```
 
 #### Not yet available
 
 Some of these commands are being developed:
 
-- Modifying a commit:
-	```
-	PRAGMA branch_log [--set|--add|--del] <name> <sql commands>
-	```
 - Showing the diff between 2 branches or commits:
 	```
 	PRAGMA branch_diff <from_branch>[.<commit>] <to_branch>[.<commit>]
