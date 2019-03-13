@@ -655,6 +655,10 @@ class TestSQLiteBranches(unittest.TestCase):
 
 
     def test04_edit_commits(self):
+
+        if omit_logs:
+            self.skipTest("sql log support was not compiled")
+
         shutil.copy("test.db","test2.db")
         conn = sqlite3.connect('file:test2.db?branches=on')
         c = conn.cursor()
