@@ -12,6 +12,13 @@ install:
   - cd -
 
 script:
+  # normal build
   - make
+  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then sudo make install; fi
+  - make test
+  # clean
+  - make clean
+  # build without SQL log support
+  - make CFLAGS="-DOMIT_BRANCH_LOG"
   - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then sudo make install; fi
   - make test

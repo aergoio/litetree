@@ -22,6 +22,8 @@ install:
 
 build_script:
   - mingw32-make LMDBPATH="lmdb\libraries\liblmdb"
-
-test_script:
+  - mingw32-make test PY_HOME=%PYTHON_PATH% LMDBPATH="lmdb\libraries\liblmdb"
+  - mingw32-make clean
+  # build without SQL log support
+  - mingw32-make LMDBPATH="lmdb\libraries\liblmdb" CFLAGS="-DOMIT_BRANCH_LOG"
   - mingw32-make test PY_HOME=%PYTHON_PATH% LMDBPATH="lmdb\libraries\liblmdb"

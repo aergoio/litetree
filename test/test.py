@@ -12,12 +12,14 @@ if platform.system() == "Darwin":
 else:
     import sqlite3
 
-sqlite_version = "3.24.0"
+sqlite_version = "3.27.2"
 
 if sqlite3.sqlite_version != sqlite_version:
     print "wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version
     import sys
     sys.exit(1)
+
+omit_logs = False
 
 def delete_file(filepath):
     if os.path.exists(filepath):
@@ -26,8 +28,23 @@ def delete_file(filepath):
 
 class TestSQLiteBranches(unittest.TestCase):
 
+    def test00_read_config(self):
+        delete_file("test.db")
+        delete_file("test.db-lock")
+        conn = sqlite3.connect('file:test.db?branches=on')
+        c = conn.cursor()
+
+        c.execute("pragma branch_log")
+        if c.fetchone()[0] == "disabled":
+            global omit_logs
+            omit_logs = True
+
+        conn.close()
+
+
     def test01_branches(self):
         delete_file("test.db")
+        delete_file("test.db-lock")
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
 
@@ -170,7 +187,37 @@ class TestSQLiteBranches(unittest.TestCase):
         conn.close()
 
 
+    def test02_branch_tree(self):
+        conn = sqlite3.connect('file:test.db?branches=on')
+        c = conn.cursor()
+
+        tree1 = "1-2-3-4-5  master\n"  \
+                "  |\n"                \
+                "  +-3-4  test\n"      \
+                "  | |\n"              \
+                "  | `-4  sub-test2\n" \
+                "  |\n"                \
+                "  `-  sub-test1"
+
+        tree2 = "1-2-3-4-5  master\n"  \
+                "  |\n"                \
+                "  +-  sub-test1\n"    \
+                "  |\n"                \
+                "  `-3-4  test\n"      \
+                "    |\n"              \
+                "    `-4  sub-test2"
+
+        c.execute("pragma branch_tree")
+        self.assertIn(c.fetchone()[0], [tree1,tree2])
+
+        conn.close()
+
+
     def test03_sql_log(self):
+
+        if omit_logs:
+            self.skipTest("sql log support was not compiled")
+
         conn = sqlite3.connect('file:test.db?branches=on')
         c = conn.cursor()
 
@@ -1203,9 +1250,58 @@ class TestSQLiteBranches(unittest.TestCase):
         c.execute("pragma branches")
         self.assertListEqual(c.fetchall(), [("master",),("b2",),("b3",),("b4",)])
 
-        # try to create a branch in which its name contains a dot
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=  at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= ")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=")
+
         with self.assertRaises(sqlite3.OperationalError):
             c.execute("pragma new_branch=another.branch at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=.test. at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=.test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test. at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch==test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test= at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa=bbb at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=(test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test( at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa(bbb at master.2")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=)test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test) at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=aaa)bbb at master.2")
+
+        # invalid characters at beginning
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=-test at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=--test at master.2")
+
+        # numbers
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=3 at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=123 at master.2")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch= 123 at master.2")
 
         c.execute("pragma branch")
         self.assertEqual(c.fetchone()[0], "master")
@@ -1350,26 +1446,27 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
         self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",),("fourth",),("fifth",),("sixth",)])
 
-        c1.execute("pragma branch_log master")
-        c2.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1(name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",4,"insert into t1 values ('third')",),
-            ("master",5,"insert into t1 values ('fourth')",),
-            ("master",5,"insert into t1 values ('fifth')",),
-            ("master",5,"insert into t1 values ('sixth')",)
-        ])
-        self.assertListEqual(c2.fetchall(), [
-            ("master",1,"create table t1(name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",4,"insert into t1 values ('third')",),
-            ("master",5,"insert into t1 values ('fourth')",),
-            ("master",5,"insert into t1 values ('fifth')",),
-            ("master",5,"insert into t1 values ('sixth')",)
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            c2.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1(name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",4,"insert into t1 values ('third')",),
+                ("master",5,"insert into t1 values ('fourth')",),
+                ("master",5,"insert into t1 values ('fifth')",),
+                ("master",5,"insert into t1 values ('sixth')",)
+            ])
+            self.assertListEqual(c2.fetchall(), [
+                ("master",1,"create table t1(name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",4,"insert into t1 values ('third')",),
+                ("master",5,"insert into t1 values ('fourth')",),
+                ("master",5,"insert into t1 values ('fifth')",),
+                ("master",5,"insert into t1 values ('sixth')",)
+            ])
 
         c1.execute("pragma branch_info(master)")
         obj = json.loads(c1.fetchone()[0])
@@ -1383,20 +1480,21 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
         self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",)])
 
-        c1.execute("pragma branch_log master")
-        c2.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1(name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",4,"insert into t1 values ('third')",),
-        ])
-        self.assertListEqual(c2.fetchall(), [
-            ("master",1,"create table t1(name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",4,"insert into t1 values ('third')",),
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            c2.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1(name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",4,"insert into t1 values ('third')",),
+            ])
+            self.assertListEqual(c2.fetchall(), [
+                ("master",1,"create table t1(name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",4,"insert into t1 values ('third')",),
+            ])
 
         # try to move to a deleted point
         with self.assertRaises(sqlite3.OperationalError):
@@ -1507,7 +1605,7 @@ class TestSQLiteBranches(unittest.TestCase):
 
         c1.execute("pragma del_branch(test2)")
 
-        c1.execute("prAGma branches")
+        c1.execute("pragma branches")
         self.assertListEqual(c1.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",)])
 
         with self.assertRaises(sqlite3.OperationalError):
@@ -1518,6 +1616,17 @@ class TestSQLiteBranches(unittest.TestCase):
 
         with self.assertRaises(sqlite3.OperationalError):
             c2.execute("pragma branch")
+
+
+        c1.execute("pragma new_branch=new-one at test")
+        c1.execute("pragma branches")
+        self.assertListEqual(c1.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",),("new-one",)])
+        c1.execute("pragma branch")
+        self.assertEqual(c1.fetchone()[0], "new-one")
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("from test branch",),("val1",),(2,),(3.3,)])
+
 
 
         '''
@@ -1559,8 +1668,8 @@ class TestSQLiteBranches(unittest.TestCase):
 
         c1.execute("pragma branches")
         c2.execute("pragma branches")
-        self.assertListEqual(c1.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",)])
-        self.assertListEqual(c2.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",)])
+        self.assertListEqual(c1.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",),("new-one",)])
+        self.assertListEqual(c2.fetchall(), [("test",),("sub-test1",),("sub-test2",),("renamed-branch",),("new-one",)])
 
         c1.execute("pragma branch")
         c2.execute("pragma branch")
@@ -1631,6 +1740,7 @@ class TestSQLiteBranches(unittest.TestCase):
         ca.execute("select * from t2")
         self.assertListEqual(ca.fetchall(), [("att1",),("att2",)])
 
+        delete_file("test1.db")
         ca.execute("attach database 'test1.db' as temp1")
         ca.execute("detach database temp1")
 
@@ -1850,7 +1960,391 @@ class TestSQLiteBranches(unittest.TestCase):
         conn1.close()
 
 
-    def test15_forward_merge(self):
+    def test15_discard_commits(self):
+
+        def build_list(start,end):
+            list = []
+            for i in range(start,end+1):
+                list.append(("c" + str(i),))
+            return list
+
+        delete_file("test5.db")
+        conn = sqlite3.connect('file:test5.db?branches=on')
+        c = conn.cursor()
+
+        c.execute("pragma page_size")
+        self.assertEqual(c.fetchone()[0], 4096)
+
+        c.execute("pragma journal_mode")
+        self.assertEqual(c.fetchone()[0], "branches")
+
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("pragma branches")
+        self.assertListEqual(c.fetchall(), [("master",)])
+
+        c.execute("create table t1(name)")
+        conn.commit()
+
+        for i in range(2,16+1):
+            c.execute("insert into t1 values ('c" + str(i) + "')")
+            conn.commit()
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,16))
+
+        c.execute("pragma new_branch=test at master.8")
+        #c.execute("pragma new_branch=test2 at master.8")
+
+        # it should deny the creation of another branch with the same name
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma new_branch=test at master.2")
+
+        c.execute("pragma branches")
+        self.assertListEqual(c.fetchall(), [("master",),("test",)])
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "test")
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,8))
+
+        c.execute("pragma discard_commits master.2-4")
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,8))
+
+        c.execute("pragma branch=master")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,16))
+
+        for i in range(2,4+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+
+        c.execute("pragma branch=master.1")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.1")
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [])
+
+        for i in range(5,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        c.execute("pragma branch=master.5")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.5")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma discard_commits master.4-7")
+
+        c.execute("pragma branch=master.8")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.8")
+
+        c.execute("pragma discard_commits master.4-7")
+
+        for i in range(2,7+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+
+
+        c.execute("pragma branch=master.1")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.1")
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), [])
+
+        for i in range(8,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        c.execute("pragma branch=master.8")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.8")
+
+
+        c.execute("pragma discard_commits master.1-3")
+
+        for i in range(1,7+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+
+        for i in range(8,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma discard_commits master.7-9")
+
+        c.execute("pragma branch=master.8")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.8")
+
+        c.execute("pragma discard_commits master.9-11")
+
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.8")
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,8))
+
+        for i in range(1,7+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+
+        for i in range(9,11+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+
+        for i in range(12,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        c.execute("pragma branch=test")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "test")
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,8))
+
+        conn.close()
+
+        #--------------------------------------------------
+
+        delete_file("test5.db")
+        conn = sqlite3.connect('file:test5.db?branches=on')
+        c = conn.cursor()
+
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("pragma branches")
+        self.assertListEqual(c.fetchall(), [("master",)])
+
+        c.execute("create table t1(name)")
+        conn.commit()
+
+        for i in range(2,16+1):
+            c.execute("insert into t1 values ('c" + str(i) + "')")
+            conn.commit()
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,16))
+
+        c.execute("pragma discard_commits master.3-5")
+
+        for i in range(3,5+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma new_branch=test at master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch_truncate master." + str(i))
+
+        c.execute("pragma branch=master.6")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.6")
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,6))
+
+        for i in range(1,2+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        c.execute("pragma branch=master")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,16))
+
+        c.execute("pragma discard_commits master.10-12")
+
+        for i in range(10,12+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma new_branch=test at master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch_truncate master." + str(i))
+
+        for i in range(6,9+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        for i in range(13,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        c.execute("pragma branch=master.8")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master.8")
+
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("pragma discard_commits master.6-9")
+
+        c.execute("pragma branch=master")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("pragma discard_commits master.6-9")
+
+        for i in range(3,12+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma new_branch=test at master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch_truncate master." + str(i))
+
+        for i in range(1,2+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        for i in range(13,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        c.execute("pragma branch=master")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("pragma discard_commits master.1-7")
+
+        for i in range(1,12+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma new_branch=test at master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch_truncate master." + str(i))
+
+        for i in range(13,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        conn.close()
+
+        #--------------------------------------------------
+
+        delete_file("test5.db")
+        conn = sqlite3.connect('file:test5.db?branches=on')
+        c = conn.cursor()
+
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("pragma branches")
+        self.assertListEqual(c.fetchall(), [("master",)])
+
+        c.execute("create table t1(name)")
+        conn.commit()
+
+        for i in range(2,16+1):
+            c.execute("insert into t1 values ('c" + str(i) + "')")
+            conn.commit()
+
+        c.execute("select * from t1")
+        self.assertListEqual(c.fetchall(), build_list(2,16))
+
+        c.execute("pragma discard_commits master.1")
+        c.execute("pragma discard_commits master.1-2")
+        c.execute("pragma discard_commits master.3-3")
+        c.execute("pragma discard_commits master.1-4")
+
+        for i in range(1,4+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma new_branch=test at master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch_truncate master." + str(i))
+
+        for i in range(5,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        c.execute("pragma discard_commits master.7-10")
+
+        for i in range(7,10+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma new_branch=test at master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch_truncate master." + str(i))
+
+        for i in range(5,6+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        c.execute("pragma branch=master")
+        c.execute("pragma branch")
+        self.assertEqual(c.fetchone()[0], "master")
+
+        c.execute("pragma discard_commits master.1-12")
+
+        for i in range(1,12+1):
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch=master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma new_branch=test at master." + str(i))
+            with self.assertRaises(sqlite3.OperationalError):
+                c.execute("pragma branch_truncate master." + str(i))
+
+        for i in range(13,16+1):
+            c.execute("pragma branch=master." + str(i))
+            c.execute("pragma branch")
+            self.assertEqual(c.fetchone()[0], "master." + str(i))
+            c.execute("select * from t1")
+            self.assertListEqual(c.fetchall(), build_list(2,i))
+
+        conn.close()
+
+
+    def test16_forward_merge(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('file:test4.db?branches=on')
         conn2 = sqlite3.connect('file:test4.db?branches=on')
@@ -1886,7 +2380,7 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertListEqual(c2.fetchall(), [("first",)])
 
         # create a new branch on connection 1
-        c1.execute("pragma new_branch=dev at master.2")
+        c1.execute("pragma new_branch=dev")
         c1.execute("pragma branch")
         self.assertEqual(c1.fetchone()[0], "dev")
         c1.execute("pragma branches")
@@ -2408,7 +2902,7 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
-    def test16_forward_merge(self):
+    def test17_forward_merge(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('file:test4.db?branches=on')
         conn2 = sqlite3.connect('file:test4.db?branches=on')
@@ -2734,17 +3228,18 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select name from sqlite_master")
         self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
 
-        c1.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1 (name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"create table t2 (name)",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",3,"create table t3 (name)",),
-            ("master",3,"insert into t1 values ('third')",),
-            ("master",3,"insert into t2 values ('first')",),
-            ("master",3,"insert into t3 values ('first')",),
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1 (name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"create table t2 (name)",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",3,"create table t3 (name)",),
+                ("master",3,"insert into t1 values ('third')",),
+                ("master",3,"insert into t2 values ('first')",),
+                ("master",3,"insert into t3 values ('first')",),
+            ])
 
         conn1.close()
 
@@ -2761,17 +3256,18 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select name from sqlite_master")
         self.assertListEqual(c1.fetchall(), [("t1",),("t2",),("t3",)])
 
-        c1.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1 (name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"create table t2 (name)",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",3,"create table t3 (name)",),
-            ("master",3,"insert into t1 values ('third')",),
-            ("master",3,"insert into t2 values ('first')",),
-            ("master",3,"insert into t3 values ('first')",),
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1 (name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"create table t2 (name)",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",3,"create table t3 (name)",),
+                ("master",3,"insert into t1 values ('third')",),
+                ("master",3,"insert into t2 values ('first')",),
+                ("master",3,"insert into t3 values ('first')",),
+            ])
 
         c1.execute("savepoint s1")
         c1.execute("create table tx (name)")
@@ -2803,22 +3299,23 @@ class TestSQLiteBranches(unittest.TestCase):
         c1.execute("select * from t4")
         self.assertListEqual(c1.fetchall(), [("first",)])
 
-        c1.execute("pragma branch_log master")
-        self.assertListEqual(c1.fetchall(), [
-            ("master",1,"create table t1 (name)",),
-            ("master",2,"insert into t1 values ('first')",),
-            ("master",3,"create table t2 (name)",),
-            ("master",3,"insert into t1 values ('second')",),
-            ("master",3,"create table t3 (name)",),
-            ("master",3,"insert into t1 values ('third')",),
-            ("master",3,"insert into t2 values ('first')",),
-            ("master",3,"insert into t3 values ('first')",),
-            ("master",4,"create table t4 (name)",),
-            ("master",4,"insert into t1 values ('fourth')",),
-            ("master",4,"insert into t4 values ('first')",),
-            ("master",4,"insert into t2 values ('third')",),
-            ("master",4,"insert into t3 values ('third')",),
-        ])
+        if not omit_logs:
+            c1.execute("pragma branch_log master")
+            self.assertListEqual(c1.fetchall(), [
+                ("master",1,"create table t1 (name)",),
+                ("master",2,"insert into t1 values ('first')",),
+                ("master",3,"create table t2 (name)",),
+                ("master",3,"insert into t1 values ('second')",),
+                ("master",3,"create table t3 (name)",),
+                ("master",3,"insert into t1 values ('third')",),
+                ("master",3,"insert into t2 values ('first')",),
+                ("master",3,"insert into t3 values ('first')",),
+                ("master",4,"create table t4 (name)",),
+                ("master",4,"insert into t1 values ('fourth')",),
+                ("master",4,"insert into t4 values ('first')",),
+                ("master",4,"insert into t2 values ('third')",),
+                ("master",4,"insert into t3 values ('third')",),
+            ])
 
         conn1.close()
 
@@ -2900,7 +3397,36 @@ class TestSQLiteBranches(unittest.TestCase):
         conn1.close()
 
 
-    def test21_normal_sqlite(self):
+    def test21_internal_temporary_dbs(self):
+        delete_file("test4.db")
+        conn1 = sqlite3.connect('file:test4.db?branches=on')
+        c1 = conn1.cursor()
+
+        c1.execute("create table t1 (val int)")
+        conn1.commit()
+
+        c1.execute("insert into t1 values (1),(2),(3)")
+        conn1.commit()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [(1,),(2,),(3,)])
+
+        c1.execute("with recursive inc(val) as (values (1) union all select val+1 from t1 where val<10) select val from inc")
+        self.assertListEqual(c1.fetchall(), [(1,),(2,),(3,),(4,)])
+
+        c1.execute("insert into t1 select val from t1")
+        conn1.commit()
+
+        c1.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [(1,),(2,),(3,),(1,),(2,),(3,)])
+
+        c1.execute("with recursive inc(val) as (values (1) union all select val+1 from inc where val<7) select val from inc")
+        self.assertListEqual(c1.fetchall(), [(1,),(2,),(3,),(4,),(5,),(6,),(7,)])
+
+        conn1.close()
+
+
+    def test22_normal_sqlite(self):
         delete_file("test4.db")
         conn1 = sqlite3.connect('test4.db')
         conn2 = sqlite3.connect('test4.db')
@@ -3025,6 +3551,27 @@ class TestSQLiteBranches(unittest.TestCase):
 
         conn1.close()
         conn2.close()
+
+
+    @classmethod
+    def tearDownClass(self):
+        delete_file("test.db")
+        delete_file("test.db-lock")
+
+        delete_file("test1.db")
+        delete_file("attached.db")
+
+        delete_file("test2.db")
+        delete_file("test2.db-lock")
+
+        delete_file("test3.db")
+        delete_file("test3.db-lock")
+
+        delete_file("test4.db")
+        delete_file("test4.db-lock")
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
 
 
 if __name__ == '__main__':
