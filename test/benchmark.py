@@ -39,14 +39,11 @@ conn4 = sqlite3.connect('file:branch.db?branches=on', isolation_level=None)
 
 c = conn2.cursor()
 c.execute("pragma journal_mode=wal")
-conn2.commit()
 c.close()
 
 c = conn3.cursor()
 c.execute("pragma mmap_size=" + str(64 * 1024 * 1024))
-conn3.commit()
 c.execute("pragma journal_mode=wal")
-conn3.commit()
 c.close()
 
 
