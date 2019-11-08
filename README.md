@@ -182,7 +182,7 @@ The data is not compressed, and each db page is stored on just one disk sector (
 
 ## Performance
 
-LiteTree is more than **TWICE AS FAST** than normal SQLite on Linux and MacOSX!!!
+LiteTree is way faster than normal SQLite (journal mode) with comparable performance to WAL mode.
 
 Here are the some results:
 
@@ -191,13 +191,17 @@ Here are the some results:
 ```
 writing:
 --------
-normal   = 3.06862306595 seconds
-litetree = 1.49606800079 seconds
+normal   = 22.8921730518 seconds
+wal      = 10.7780168056 seconds
+mmap     = 10.4009709358 seconds
+litetree = 10.8633410931 seconds
 
 reading:
 --------
-normal   = 0.00796008110046 seconds
-litetree = 0.00337290763855 seconds
+normal   = 0.817955970764 seconds
+wal      = 0.660045146942 seconds
+mmap     = 0.592491865158 seconds
+litetree = 0.619393110275 seconds
 ```
 
 ##### MacOSX
