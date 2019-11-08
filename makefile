@@ -138,8 +138,8 @@ else
 endif
 else	# not Windows
 ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
-	sudo easy_install cffi
-	cd test && sudo easy_install lmdb
+	sudo python -m easy_install cffi
+	cd test && sudo python -m easy_install lmdb
 ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
 	git clone --depth=1 https://github.com/dw/py-lmdb
 	cd py-lmdb && sudo LMDB_FORCE_CPYTHON=1 python setup.py install
