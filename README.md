@@ -209,13 +209,17 @@ litetree = 0.619393110275 seconds
 ```
 writing:
 --------
-normal   = 0.562711000443 seconds
-litetree = 0.192953109741 seconds
+normal   = 1.9102909565 seconds
+wal      = 1.30300784111 seconds
+mmap     = 1.21677088737 seconds
+litetree = 0.988132953644 seconds
 
 reading:
 --------
-normal   = 0.00511813163757 seconds
-litetree = 0.00336885452271 seconds
+normal   = 0.999235868454 seconds
+wal      = 0.776713132858 seconds
+mmap     = 0.653935909271 seconds
+litetree = 0.714652061462 seconds
 ```
 
 ##### Windows
