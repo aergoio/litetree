@@ -1159,16 +1159,16 @@ class TestSQLiteBranches(unittest.TestCase):
         c1 = conn1.cursor()
         c2 = conn2.cursor()
 
+        c1.execute("select * from t1")
+        c2.execute("select * from t1")
+        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
+        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",)])
+
         # the new name should be there
         c1.execute("pragma branches")
         c2.execute("pragma branches")
         self.assertListEqual(c1.fetchall(), [("master",),("test",),("sub-test1",),("sub-test2",),("renamed-branch",),("test2",)])
         self.assertListEqual(c2.fetchall(), [("master",),("test",),("sub-test1",),("sub-test2",),("renamed-branch",),("test2",)])
-
-        c1.execute("select * from t1")
-        c2.execute("select * from t1")
-        self.assertListEqual(c1.fetchall(), [("first",),("second",),("third",)])
-        self.assertListEqual(c2.fetchall(), [("first",),("second",),("third",)])
 
         conn1.close()
         conn2.close()
