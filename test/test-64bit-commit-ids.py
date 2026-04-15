@@ -4,19 +4,14 @@
 import unittest
 import json
 import os
-import platform
 import lmdb
 import varint
-
-if platform.system() == "Darwin":
-    import pysqlite2.dbapi2 as sqlite3
-else:
-    import sqlite3
+import sqlite3
 
 sqlite_version = "3.27.2"
 
 if sqlite3.sqlite_version != sqlite_version:
-    print "wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version
+    print("wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version)
     import sys
     sys.exit(1)
 
@@ -25,6 +20,12 @@ def delete_file(filepath):
         os.remove(filepath)
 
 v64bit_increment = 0xFFFFFFFE
+
+
+def _b(s):
+    """LMDB keys/values must be bytes under Python 3."""
+    return s if isinstance(s, bytes) else s.encode("ascii")
+
 
 class Test64bitCommitIds(unittest.TestCase):
 
@@ -91,35 +92,35 @@ class Test64bitCommitIds(unittest.TestCase):
 
         with env.begin(buffers=True) as txn:
 
-            value = txn.get('last_branch_id')
+            value = txn.get(_b("last_branch_id"))
             num_branches = varint.decode(value)[0]
             self.assertEqual(num_branches, 2)
 
             for branch_id in range(1, num_branches + 1):
-                pages_db.append(env.open_db('b' + str(branch_id) + '-pages'))
-                maxpg_db.append(env.open_db('b' + str(branch_id) + '-maxpage'))
+                pages_db.append(env.open_db(_b("b" + str(branch_id) + "-pages")))
+                maxpg_db.append(env.open_db(_b("b" + str(branch_id) + "-maxpage")))
                 self.assertEqual(len(pages_db) - 1, branch_id)
                 self.assertEqual(len(maxpg_db) - 1, branch_id)
 
         with env.begin(write=True, buffers=True) as txn:
 
-            value = txn.get('b1.name')
+            value = txn.get(_b("b1.name"))
             self.assertEqual(bytes(value).decode("utf-8"), "master\x00")
 
-            value = txn.get('b2.name')
+            value = txn.get(_b("b2.name"))
             self.assertEqual(bytes(value).decode("utf-8"), "test\x00")
 
             for branch_id in range(1, num_branches + 1):
-                prefix = 'b' + str(branch_id)
+                prefix = "b" + str(branch_id)
 
-                key = prefix + '.last_commit'
+                key = _b(prefix + ".last_commit")
                 value = txn.get(key)
                 last_commit = varint.decode(value)[0]
                 last_commit += v64bit_increment
                 value = varint.encode(last_commit)
                 txn.put(key, value)
 
-                key = prefix + '.source_commit'
+                key = _b(prefix + ".source_commit")
                 value = txn.get(key)
                 source_commit = varint.decode(value)[0]
                 if source_commit > 0:
@@ -133,7 +134,8 @@ class Test64bitCommitIds(unittest.TestCase):
                     res = varint.decode(key)
                     pgno = res[0]
                     size1 = res[1]
-                    res = varint.decode(key[size1:len(key)])
+                    keybuf = bytes(key)
+                    res = varint.decode(keybuf[size1 : len(keybuf)])
                     commit = res[0]
                     size2 = res[1]
                     if commit < v64bit_increment:
