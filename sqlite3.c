@@ -129068,11 +129068,11 @@ SQLITE_PRIVATE void sqlite3Pragma(
 
   case PragTyp_BRANCH_MERGE: {
     if( strncmp(zRight,"--forward ",10)==0 ){
-      char *zparent, *zchild, *znum_commits;
-      zparent = stripchr(zRight, ' ');
-      zchild = stripchr(zparent, ' ');
-      znum_commits = stripchr(zchild, ' ');
-      rc = pragma_branch_forward_merge(db, iDb, zparent, zchild, znum_commits);
+      char *zSource, *zDest, *znum_commits;
+      zSource = stripchr(zRight, ' ');
+      zDest = stripchr(zSource, ' ');
+      znum_commits = stripchr(zDest, ' ');
+      rc = pragma_branch_forward_merge(db, iDb, zDest, zSource, znum_commits);
       if( rc ){
         sqlite3ErrorMsg(pParse, sqlite3ErrStr(rc));
       } else {
@@ -129137,7 +129137,8 @@ SQLITE_PRIVATE void sqlite3Pragma(
       }
     } else {
       sqlite3ErrorMsg(pParse,
-          "usage: PRAGMA branch_merge [--check|--force|--strategy=ours|theirs] {source} [{dest}]");
+          "usage: PRAGMA branch_merge --forward {source} {dest} [{num_commits}] | "
+          "[--check|--force|--strategy=ours|theirs] {source} [{dest}]");
     }
     break;
   }
