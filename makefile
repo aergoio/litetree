@@ -132,39 +132,23 @@ else
 	cd $(PY_HOME)/DLLs && [ ! -f sqlite3-orig.dll ] && mv sqlite3.dll sqlite3-orig.dll || true
 	cp litetree-0.1.dll $(PY_HOME)/DLLs/sqlite3.dll
 	cp $(LMDBPATH)/lmdb.dll $(PY_HOME)/DLLs/lmdb.dll
-	cd test && python -mpip install lmdb
-	cd test && python test.py -v
-	cd test && python test-64bit-commit-ids.py -v
+	cd test && python3 -m pip install lmdb
+	cd test && python3 test.py -v
+	cd test && python3 test-64bit-commit-ids.py -v
 endif
-else	# not Windows
-ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
-	sudo python -m easy_install cffi
-	cd test && sudo python -m easy_install lmdb
-ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
-	git clone --depth=1 https://github.com/dw/py-lmdb
-	cd py-lmdb && sudo LMDB_FORCE_CPYTHON=1 python setup.py install
-ifneq ($(shell python -c "import lmdb" 2> /dev/null; echo $$?),0)
-	sudo python -c "import cffi"
-	sudo python -c "import lmdb"
-endif
-endif
+else
+ifneq ($(shell python3 -c "import lmdb" 2> /dev/null; echo $$?),0)
+	pip3 install lmdb
 endif
 ifeq ($(OS),OSX)
-ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
-ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
-	@echo "run 'sudo make install' first"
+ifneq ($(shell [ -d "$(LIBPATH2)" ]; echo $$?),0)
+	$(error On macOS, run sudo make install first. Tests need LiteTree under $(LIBPATH2). See README.md: "Compiling and installing" and "Running the Tests".)
 endif
-	git clone --depth=1 https://github.com/ghaering/pysqlite
-	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
-	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
-	cd pysqlite && python setup.py build
-	cd pysqlite && sudo python setup.py install
-endif
-	cd test && python test.py -v
-	cd test && python test-64bit-commit-ids.py -v
-else	# Linux
-	cd test && LD_LIBRARY_PATH=.. python test.py -v
-	cd test && LD_LIBRARY_PATH=.. python test-64bit-commit-ids.py -v
+	cd test && DYLD_LIBRARY_PATH="$(LIBPATH2):$(LMDBPATH)" python3 test.py -v
+	cd test && DYLD_LIBRARY_PATH="$(LIBPATH2):$(LMDBPATH)" python3 test-64bit-commit-ids.py -v
+else
+	cd test && LD_LIBRARY_PATH=..:/usr/local/lib python3 test.py -v
+	cd test && LD_LIBRARY_PATH=..:/usr/local/lib python3 test-64bit-commit-ids.py -v
 endif
 endif
 
@@ -176,22 +160,15 @@ else
 	cd $(PY_HOME)/DLLs && [ ! -f sqlite3-orig.dll ] && mv sqlite3.dll sqlite3-orig.dll || true
 	cp litetree-0.1.dll $(PY_HOME)/DLLs/sqlite3.dll
 	cp $(LMDBPATH)/lmdb.dll $(PY_HOME)/DLLs/lmdb.dll
-	cd test && python benchmark.py -v
+	cd test && python3 benchmark.py -v
 endif
 else ifeq ($(OS),OSX)
-ifneq ($(shell python -c "import pysqlite2.dbapi2" 2> /dev/null; echo $$?),0)
-ifneq ($(shell [ -d $(LIBPATH2) ]; echo $$?),0)
-	@echo "run 'sudo make install' first"
+ifneq ($(shell [ -d "$(LIBPATH2)" ]; echo $$?),0)
+	$(error On macOS, run sudo make install first. Benchmark needs LiteTree under $(LIBPATH2). See README.md: "Compiling and installing".)
 endif
-	git clone --depth=1 https://github.com/ghaering/pysqlite
-	cd pysqlite && echo "include_dirs=$(INCPATH)" >> setup.cfg
-	cd pysqlite && echo "library_dirs=$(LIBPATH2)" >> setup.cfg
-	cd pysqlite && python setup.py build
-	cd pysqlite && sudo python setup.py install
-endif
-	cd test && python benchmark.py -v
+	cd test && DYLD_LIBRARY_PATH="$(LIBPATH2):$(LMDBPATH)" python3 benchmark.py -v
 else
-	cd test && LD_LIBRARY_PATH=.. python benchmark.py -v
+	cd test && LD_LIBRARY_PATH=..:/usr/local/lib python3 benchmark.py -v
 endif
 
 # variables:

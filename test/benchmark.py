@@ -3,18 +3,19 @@
 #
 import json
 import os
-import platform
-
-if platform.system() == "Darwin":
-    import pysqlite2.dbapi2 as sqlite3
-else:
-    import sqlite3
+import sys
+import sqlite3
 
 sqlite_version = "3.27.2"
 
 if sqlite3.sqlite_version != sqlite_version:
-    print "wrong SQLite version. expected: " + sqlite_version + " found: " + sqlite3.sqlite_version
-    quit()
+    print(
+        "wrong SQLite version. expected: "
+        + sqlite_version
+        + " found: "
+        + sqlite3.sqlite_version
+    )
+    sys.exit(1)
 
 def delete_file(filepath):
     if os.path.exists(filepath):
