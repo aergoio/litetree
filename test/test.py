@@ -3179,6 +3179,179 @@ class TestSQLiteBranches(unittest.TestCase):
         conn2.close()
 
 
+    def test23_merge(self):
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("pragma journal_mode")
+        self.assertEqual(c.fetchone()[0], "branches")
+
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (1, 'alice', 10)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (2, 'bob', 20)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=source at master")
+        c.execute("PRAGMA branch")
+        self.assertEqual(c.fetchone()[0], "source")
+
+        c.execute("INSERT INTO t1 VALUES (3, 'charlie', 30)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (4, 'dave', 40)")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t1 VALUES (5, 'eve', 50)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (6, 'frank', 60)")
+        conn.commit()
+
+        c.execute("SELECT count(*) FROM t1")
+        self.assertEqual(c.fetchone()[0], 4)
+
+        c.execute("PRAGMA branch_merge source")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        c.execute("SELECT count(*) FROM t1")
+        self.assertEqual(c.fetchone()[0], 6)
+
+        c.execute("SELECT name FROM t1 ORDER BY id")
+        self.assertListEqual(
+            c.fetchall(),
+            [("alice",), ("bob",), ("charlie",), ("dave",), ("eve",), ("frank",)],
+        )
+
+        c.execute("PRAGMA branch=source")
+        c.execute("SELECT count(*) FROM t1")
+        self.assertEqual(c.fetchone()[0], 4)
+
+        conn.close()
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (1, 'alice', 10)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (2, 'bob', 20)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=conflict_src at master")
+        c.execute("UPDATE t1 SET value=999 WHERE id=2")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("UPDATE t1 SET value=888 WHERE id=2")
+        conn.commit()
+
+        with self.assertRaises(sqlite3.OperationalError) as ctx:
+            c.execute("PRAGMA branch_merge conflict_src")
+        self.assertIn("abort", str(ctx.exception).lower())
+
+        conn2 = sqlite3.connect("file:test5.db?branches=on")
+        c2 = conn2.cursor()
+        c2.execute("PRAGMA branch=master")
+        c2.execute("SELECT value FROM t1 WHERE id=2")
+        self.assertEqual(c2.fetchone()[0], 888)
+        conn2.close()
+        conn.close()
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (1, 'alice', 10)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (2, 'bob', 20)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=theirs_src at master")
+        c.execute("UPDATE t1 SET value=999 WHERE id=2")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("UPDATE t1 SET value=888 WHERE id=2")
+        conn.commit()
+
+        c.execute("PRAGMA branch_merge --strategy=theirs theirs_src")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        c.execute("SELECT value FROM t1 WHERE id=2")
+        self.assertEqual(c.fetchone()[0], 999)
+
+        conn.close()
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (1, 'alice', 10)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (2, 'bob', 20)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=ours_src at master")
+        c.execute("UPDATE t1 SET value=999 WHERE id=2")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("UPDATE t1 SET value=888 WHERE id=2")
+        conn.commit()
+
+        c.execute("PRAGMA branch_merge --strategy=ours ours_src")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        c.execute("SELECT value FROM t1 WHERE id=2")
+        self.assertEqual(c.fetchone()[0], 888)
+
+        conn.close()
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (1, 'alice', 10)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (2, 'bob', 20)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (3, 'charlie', 30)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=del_src at master")
+        c.execute("DELETE FROM t1 WHERE id=3")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t1 VALUES (4, 'dave', 40)")
+        conn.commit()
+
+        c.execute("PRAGMA branch_merge del_src")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        c.execute("SELECT id FROM t1 ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (2,), (4,)])
+
+        conn.close()
+
+
+
     @classmethod
     def tearDownClass(self):
         delete_file("test.db")

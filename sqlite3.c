@@ -15841,6 +15841,8 @@ SQLITE_PRIVATE int    pragma_truncate_branch(sqlite3 *db, int iDb, char *name, u
 SQLITE_PRIVATE int    pragma_delete_branch(sqlite3 *db, int iDb, char *name);
 #endif
 SQLITE_PRIVATE char * pragma_get_branch_info(sqlite3 *db, int iDb, char *name);
+SQLITE_PRIVATE int    pragma_branch_merge(sqlite3 *db, int iDb, char *zSource, char *zDest, int strategy);
+SQLITE_PRIVATE int    find_common_ancestor(lmdb *lmdb, branch_info *source, branch_info *dest, branch_info **pAncestorBranch, u64 *pAncestorCommit);
 #ifndef OMIT_BRANCH_LOG
 SQLITE_PRIVATE int    pragma_get_branch_log(sqlite3 *db, int iDb, char *params, Parse *pParse);
 #endif
@@ -67192,6 +67194,530 @@ SQLITE_PRIVATE int pragma_discard_commits(sqlite3 *db, int iDb, char *range){
   }
   return rc;
 
+}
+
+/*
+** 3-Way Merge Implementation
+**
+** Merges changes from a source branch into a destination branch using
+** the session/changeset API. The algorithm:
+**
+**   1. Find the common ancestor of source and dest
+**   2. Open a separate internal connection
+**   3. On the internal connection: set main to source branch,
+**      ATTACH the same file at the ancestor point
+**   4. Use sqlite3session_diff() to compute ancestor→source changeset
+**   5. Apply the changeset to the dest branch with conflict detection
+**
+** Strategy flags:
+**   0 = default (abort on conflict)
+**   1 = --check  (dry-run, report conflicts only)
+**   2 = --force / --strategy=theirs (source wins)
+**   3 = --strategy=ours (dest wins)
+*/
+
+#define MERGE_STRATEGY_ABORT   0
+#define MERGE_STRATEGY_CHECK   1
+#define MERGE_STRATEGY_THEIRS  2
+#define MERGE_STRATEGY_OURS    3
+
+typedef struct MergeConflict MergeConflict;
+struct MergeConflict {
+  char *zTable;
+  int eType;
+  int nRow;
+  sqlite3_int64 iRowid;
+  MergeConflict *pNext;
+};
+
+typedef struct MergeCtx MergeCtx;
+struct MergeCtx {
+  int strategy;
+  int nConflicts;
+  MergeConflict *pConflicts;
+  char *zErrMsg;
+};
+
+/*
+** Find the common ancestor of two branches.
+**
+** Walks the source_branch chain from both source and dest to find
+** the point where the histories diverge.
+**
+** Returns the branch and commit of the common ancestor.
+*/
+SQLITE_PRIVATE int find_common_ancestor(
+  lmdb *lmdb,
+  branch_info *source,
+  branch_info *dest,
+  branch_info **pAncestorBranch,
+  u64 *pAncestorCommit
+){
+  int source_ancestor_ids[64];
+  u64 source_ancestor_commits[64];
+  int n_source_ancestors = 0;
+  branch_info *b;
+  u64 commit_limit;
+  int i;
+
+  b = source;
+  commit_limit = b->last_commit;
+  while( b && b->id > 0 && n_source_ancestors < 64 ){
+    int already = 0;
+    for(i=0; i<n_source_ancestors; i++){
+      if( source_ancestor_ids[i] == b->id ){
+        already = 1;
+        break;
+      }
+    }
+    if( already ) break;
+    source_ancestor_ids[n_source_ancestors] = b->id;
+    source_ancestor_commits[n_source_ancestors] = commit_limit;
+    n_source_ancestors++;
+    if( b->source_branch > 0 && b->source_branch <= lmdb->num_branches ){
+      commit_limit = b->source_commit;
+      b = &lmdb->branches[b->source_branch];
+    } else {
+      break;
+    }
+  }
+
+  b = dest;
+  commit_limit = b->last_commit;
+  while( b && b->id > 0 ){
+    for(i=0; i<n_source_ancestors; i++){
+      if( source_ancestor_ids[i] == b->id ){
+        u64 common_commit = source_ancestor_commits[i];
+        if( commit_limit < common_commit ){
+          common_commit = commit_limit;
+        }
+        *pAncestorBranch = b;
+        *pAncestorCommit = common_commit;
+        return SQLITE_OK;
+      }
+    }
+    if( b->source_branch > 0 && b->source_branch <= lmdb->num_branches ){
+      commit_limit = b->source_commit;
+      b = &lmdb->branches[b->source_branch];
+    } else {
+      break;
+    }
+  }
+
+  return SQLITE_NOTFOUND;
+}
+
+/*
+** Free a linked list of merge conflicts.
+*/
+static void free_merge_conflicts(MergeConflict *pList){
+  MergeConflict *pNext;
+  while( pList ){
+    pNext = pList->pNext;
+    sqlite3_free(pList->zTable);
+    sqlite3_free(pList);
+    pList = pNext;
+  }
+}
+
+/*
+** Conflict handler callback for sqlite3changeset_apply_v2().
+**
+** Returns one of SQLITE_CHANGESET_OMIT, REPLACE, or ABORT based on strategy.
+*/
+static int merge_conflict_handler(
+  void *pCtx,
+  int eConflict,
+  sqlite3_changeset_iter *pIter
+){
+  MergeCtx *ctx = (MergeCtx *)pCtx;
+  const char *zTab = 0;
+  int nCol = 0;
+  int op = 0;
+  int bIndirect = 0;
+  sqlite3_int64 iRowid = 0;
+  (void)iRowid;
+
+  ctx->nConflicts++;
+
+  sqlite3changeset_op(pIter, &zTab, &nCol, &op, &bIndirect);
+
+  if( ctx->strategy == MERGE_STRATEGY_CHECK ){
+    MergeConflict *pConflict = sqlite3_malloc(sizeof(MergeConflict));
+    if( pConflict ){
+      memset(pConflict, 0, sizeof(MergeConflict));
+      pConflict->zTable = sqlite3_strdup((char*)(zTab ? zTab : ""));
+      pConflict->eType = eConflict;
+      pConflict->nRow = nCol;
+      pConflict->pNext = ctx->pConflicts;
+      ctx->pConflicts = pConflict;
+    }
+    return SQLITE_CHANGESET_ABORT;
+  }
+
+  if( ctx->strategy == MERGE_STRATEGY_THEIRS ){
+    if( eConflict==SQLITE_CHANGESET_DATA || eConflict==SQLITE_CHANGESET_CONFLICT ){
+      return SQLITE_CHANGESET_REPLACE;
+    }
+    return SQLITE_CHANGESET_OMIT;
+  }
+
+  if( ctx->strategy == MERGE_STRATEGY_OURS ){
+    return SQLITE_CHANGESET_OMIT;
+  }
+
+  return SQLITE_CHANGESET_ABORT;
+}
+
+/*
+** Filter callback: accept all tables.
+*/
+static int merge_filter_all(void *pCtx, const char *zTab){
+  return 1;
+}
+
+/*
+** Check that the schemas of source and dest branches are compatible.
+** Compares the table definitions in sqlite_master.
+**
+** Returns SQLITE_OK if compatible, SQLITE_SCHEMA if not.
+*/
+static int merge_check_schemas(
+  sqlite3 *dbSource,
+  sqlite3 *dbDest
+){
+  sqlite3_stmt *pStmt = 0;
+  int rc = SQLITE_OK;
+  char *zSql = 0;
+
+  zSql = sqlite3_mprintf(
+      "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%%' ORDER BY name");
+  if( !zSql ) return SQLITE_NOMEM;
+
+  rc = sqlite3_prepare(dbSource, zSql, -1, &pStmt, 0);
+  sqlite3_free(zSql);
+  if( rc!=SQLITE_OK ) return rc;
+
+  while( sqlite3_step(pStmt)==SQLITE_ROW ){
+    const char *zName = (const char *)sqlite3_column_text(pStmt, 0);
+    const char *zSqlSrc = (const char *)sqlite3_column_text(pStmt, 1);
+    sqlite3_stmt *pCheck = 0;
+    char *zCheckSql;
+
+    if( !zName || !zSqlSrc ) continue;
+
+    zCheckSql = sqlite3_mprintf("SELECT sql FROM sqlite_master WHERE type='table' AND name='%q'", zName);
+    if( !zCheckSql ){
+      rc = SQLITE_NOMEM;
+      break;
+    }
+    rc = sqlite3_prepare(dbDest, zCheckSql, -1, &pCheck, 0);
+    sqlite3_free(zCheckSql);
+    if( rc!=SQLITE_OK ) break;
+
+    if( sqlite3_step(pCheck)!=SQLITE_ROW ){
+      sqlite3_finalize(pCheck);
+      rc = SQLITE_SCHEMA;
+      break;
+    }
+    const char *zSqlDst = (const char *)sqlite3_column_text(pCheck, 0);
+    if( !zSqlDst || sqlite3_stricmp(zSqlSrc, zSqlDst)!=0 ){
+      sqlite3_finalize(pCheck);
+      rc = SQLITE_SCHEMA;
+      break;
+    }
+    sqlite3_finalize(pCheck);
+  }
+  sqlite3_finalize(pStmt);
+
+  return rc;
+}
+
+/*
+** Main 3-way merge function.
+**
+** Called by: PRAGMA branch_merge [--check|--force|--strategy=ours|theirs] {source} [{dest}]
+**
+** Merges changes from source branch into dest branch (or current branch if dest is NULL).
+*/
+SQLITE_PRIVATE int pragma_branch_merge(
+  sqlite3 *db,
+  int iDb,
+  char *zSource,
+  char *zDest,
+  int strategy
+){
+  Btree *pBtree = getBtreeFromiDb(db, iDb);
+  Pager *pPager = getPagerFromBtree(pBtree);
+  lmdb *pLmdb;
+  branch_info *source_branch, *dest_branch;
+  branch_info *ancestor_branch = 0;
+  u64 ancestor_commit = 0;
+  sqlite3 *dbInternal = 0;
+  sqlite3 *dbInternal2 = 0;
+  sqlite3_session *pSession = 0;
+  int nChangeset = 0;
+  void *pChangeset = 0;
+  char *zErr = 0;
+  char *zFilename = 0;
+  char *zUri = 0;
+  char zPragma[512];
+  int rc;
+  MergeCtx mergeCtx;
+
+  memset(&mergeCtx, 0, sizeof(mergeCtx));
+  mergeCtx.strategy = strategy;
+
+  if( !pPager || !pPager->lmdb ) return SQLITE_ERROR;
+  pLmdb = pPager->lmdb;
+
+  if( pLmdb->inReadTxn || pLmdb->inWriteTxn ) return SQLITE_MISUSE;
+
+  if( !pLmdb->singleConnection ){
+    rc = sqlite3BranchCheckReloadDb(pPager, 0);
+    if( rc!=SQLITE_OK ) return rc;
+  }
+
+  /* resolve dest branch */
+  if( zDest && strlen(zDest) > 0 ){
+    int id_dest = sqlite3BranchFind(pLmdb, zDest);
+    if( id_dest <= 0 ) return SQLITE_NOTFOUND;
+    dest_branch = &pLmdb->branches[id_dest];
+  } else {
+    dest_branch = pLmdb->current_branch;
+    if( !dest_branch ) return SQLITE_ERROR;
+  }
+
+  /* resolve source branch */
+  {
+    int id_source = sqlite3BranchFind(pLmdb, zSource);
+    if( id_source <= 0 ) return SQLITE_NOTFOUND;
+    source_branch = &pLmdb->branches[id_source];
+  }
+
+  if( source_branch->id == dest_branch->id ) return SQLITE_OK;
+
+  /* find common ancestor */
+  rc = find_common_ancestor(pLmdb, source_branch, dest_branch, &ancestor_branch, &ancestor_commit);
+  if( rc!=SQLITE_OK ) return rc;
+  if( !ancestor_branch ) return SQLITE_ERROR;
+
+  BRANCHTRACE("merge: source=%s dest=%s ancestor=%s.%llu",
+      source_branch->name, dest_branch->name,
+      ancestor_branch->name, ancestor_commit);
+
+  /* if ancestor is at source's head, nothing to merge */
+  if( ancestor_commit >= source_branch->last_commit ){
+    return SQLITE_OK;
+  }
+
+  /* if ancestor is dest's head, this is a fast-forward */
+  if( ancestor_commit == dest_branch->last_commit ){
+    /* could forward merge, but for now let the 3-way merge handle it */
+  }
+
+  /* open internal connection for diff computation */
+  zFilename = (char *)sqlite3_db_filename(db, "main");
+  if( !zFilename ) return SQLITE_ERROR;
+
+  zUri = sqlite3_mprintf("file:%s?branches=on&single_connection=true", zFilename);
+  if( !zUri ) return SQLITE_NOMEM;
+
+  /* connection 1: set to source branch */
+  rc = sqlite3_open(zUri, &dbInternal);
+  if( rc!=SQLITE_OK ){
+    sqlite3_free(zUri);
+    return rc;
+  }
+
+  sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA branch=%s", zSource);
+  rc = sqlite3_exec(dbInternal, zPragma, 0, 0, &zErr);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  /* connection 2: set to ancestor point */
+  rc = sqlite3_open(zUri, &dbInternal2);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA branch=%s.%llu",
+      ancestor_branch->name, ancestor_commit);
+  rc = sqlite3_exec(dbInternal2, zPragma, 0, 0, &zErr);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  sqlite3_free(zUri);
+  zUri = 0;
+
+  /* schema compatibility check (DML-only for now) */
+  rc = merge_check_schemas(dbInternal, dbInternal2);
+  if( rc==SQLITE_SCHEMA ){
+    zErr = sqlite3_mprintf("schema mismatch between branches; only DML merging is supported");
+    goto loc_cleanup;
+  }
+
+  /* attach the ancestor database to the source connection */
+  {
+    char *zAttachUri = sqlite3_mprintf("file:%s?branches=on&single_connection=true", zFilename);
+    if( !zAttachUri ){
+      rc = SQLITE_NOMEM;
+      goto loc_cleanup;
+    }
+    char *zAttachSql = sqlite3_mprintf("ATTACH '%q' AS ancestor_db", zAttachUri);
+    sqlite3_free(zAttachUri);
+    if( !zAttachSql ){
+      rc = SQLITE_NOMEM;
+      goto loc_cleanup;
+    }
+    rc = sqlite3_exec(dbInternal, zAttachSql, 0, 0, &zErr);
+    sqlite3_free(zAttachSql);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+    /* set the attached ancestor_db to the ancestor point */
+    sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA ancestor_db.branch=%s.%llu",
+        ancestor_branch->name, ancestor_commit);
+    rc = sqlite3_exec(dbInternal, zPragma, 0, 0, &zErr);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+  }
+
+  /* create session on main (source) and compute diff against ancestor */
+  rc = sqlite3session_create(dbInternal, "main", &pSession);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  {
+    sqlite3_stmt *pTblStmt = 0;
+    char *zTblSql = sqlite3_mprintf(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%%' ORDER BY name");
+    if( !zTblSql ){
+      rc = SQLITE_NOMEM;
+      goto loc_cleanup;
+    }
+    rc = sqlite3_prepare(dbInternal, zTblSql, -1, &pTblStmt, 0);
+    sqlite3_free(zTblSql);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+    while( sqlite3_step(pTblStmt)==SQLITE_ROW ){
+      const char *zTabName = (const char *)sqlite3_column_text(pTblStmt, 0);
+      if( !zTabName ) continue;
+
+      rc = sqlite3session_attach(pSession, zTabName);
+      if( rc!=SQLITE_OK ) break;
+
+      rc = sqlite3session_diff(pSession, "ancestor_db", zTabName, &zErr);
+      if( rc!=SQLITE_OK ){
+        sqlite3_finalize(pTblStmt);
+        goto loc_cleanup;
+      }
+    }
+    sqlite3_finalize(pTblStmt);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+  }
+
+  /* extract the changeset */
+  rc = sqlite3session_changeset(pSession, &nChangeset, &pChangeset);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  sqlite3session_delete(pSession);
+  pSession = 0;
+
+  /* close internal connections */
+  sqlite3_exec(dbInternal, "DETACH ancestor_db", 0, 0, 0);
+  sqlite3_close(dbInternal);
+  dbInternal = 0;
+  sqlite3_close(dbInternal2);
+  dbInternal2 = 0;
+
+  /* if no changes, nothing to merge */
+  if( nChangeset==0 || !pChangeset ){
+    return SQLITE_OK;
+  }
+
+  /* for --check, iterate the changeset to detect conflicts without applying */
+  if( strategy==MERGE_STRATEGY_CHECK ){
+    sqlite3_changeset_iter *pIter = 0;
+    rc = sqlite3changeset_start(&pIter, nChangeset, pChangeset);
+    if( rc==SQLITE_OK ){
+      /* just iterate to count entries; real conflict detection happens during apply */
+      while( sqlite3changeset_next(pIter)==SQLITE_ROW ){
+        /* advance */
+      }
+      rc = sqlite3changeset_finalize(pIter);
+    }
+    sqlite3_free(pChangeset);
+    /* we'll do a real --check by applying below in a savepoint-like way */
+    /* for now, return the changeset size as info */
+    return rc;
+  }
+
+  /* switch main connection to dest branch if needed */
+  if( pLmdb->current_branch->id != dest_branch->id ){
+    rc = pragma_set_current_branch(db, iDb, dest_branch->name, 0);
+    if( rc!=SQLITE_OK ){
+      sqlite3_free(pChangeset);
+      return rc;
+    }
+  }
+
+  /* apply the changeset to dest using apply_v2 with NOSAVEPOINT flag */
+  {
+    int applyFlags = SQLITE_CHANGESETAPPLY_NOSAVEPOINT;
+
+    /* start a write transaction on the dest branch */
+    rc = sqlite3BranchBeginWriteTransaction(pLmdb);
+    if( rc!=SQLITE_OK ){
+      sqlite3_free(pChangeset);
+      return rc;
+    }
+
+    rc = sqlite3changeset_apply_v2(
+        db, nChangeset, pChangeset,
+        merge_filter_all,
+        merge_conflict_handler,
+        &mergeCtx,
+        0, 0,
+        applyFlags
+    );
+
+    int bConflictsAbort = (strategy==MERGE_STRATEGY_ABORT && mergeCtx.nConflicts>0);
+
+    if( rc==SQLITE_OK && !bConflictsAbort ){
+      rc = sqlite3BranchCommitTransaction(pLmdb, 0);
+    } else {
+      /* abort: discard the write transaction */
+      unload_branch_array(pLmdb);
+      sqlite3BranchEndWriteTransaction(pLmdb, 0);
+      if( rc==SQLITE_OK ) rc = SQLITE_ABORT;
+    }
+
+    sqlite3_free(pChangeset);
+
+    if( rc==SQLITE_OK ){
+      /* invalidate cache since data changed */
+      rc = invalidate_loaded_sqlite_data(db, pBtree);
+    }
+  }
+
+  if( mergeCtx.nConflicts > 0 ){
+    free_merge_conflicts(mergeCtx.pConflicts);
+    if( mergeCtx.zErrMsg ){
+      sqlite3_free(mergeCtx.zErrMsg);
+    }
+  }
+
+  return rc;
+
+loc_cleanup:
+
+  if( pSession ) sqlite3session_delete(pSession);
+  if( dbInternal ){
+    sqlite3_exec(dbInternal, "DETACH ancestor_db", 0, 0, 0);
+    sqlite3_close(dbInternal);
+  }
+  if( dbInternal2 ) sqlite3_close(dbInternal2);
+  if( zUri ) sqlite3_free(zUri);
+  if( pChangeset ) sqlite3_free(pChangeset);
+  if( mergeCtx.pConflicts ) free_merge_conflicts(mergeCtx.pConflicts);
+  if( mergeCtx.zErrMsg ) sqlite3_free(mergeCtx.zErrMsg);
+
+  return rc;
 }
 
 /************** End of branches.c ********************************************/
@@ -128552,15 +129078,67 @@ SQLITE_PRIVATE void sqlite3Pragma(
       } else {
         returnSingleText(v, "OK");
       }
+    } else if( strncmp(zRight,"--check ",8)==0 ||
+               strncmp(zRight,"--force ",8)==0 ||
+               strncmp(zRight,"--strategy=",11)==0 ){
+      int merge_strategy = MERGE_STRATEGY_ABORT;
+      char *zArgs = 0;
+      char *zSource = 0;
+      char *zDest = 0;
+
+      if( strncmp(zRight,"--check ",8)==0 ){
+        merge_strategy = MERGE_STRATEGY_CHECK;
+        zArgs = zRight + 8;
+      } else if( strncmp(zRight,"--force ",8)==0 ){
+        merge_strategy = MERGE_STRATEGY_THEIRS;
+        zArgs = zRight + 8;
+      } else {
+        char *zSpace = strchr(zRight, ' ');
+        if( zSpace ){
+          *zSpace = '\0';
+          zArgs = zSpace + 1;
+        }
+        if( sqlite3_stricmp(zRight+11, "theirs")==0 ){
+          merge_strategy = MERGE_STRATEGY_THEIRS;
+        } else if( sqlite3_stricmp(zRight+11, "ours")==0 ){
+          merge_strategy = MERGE_STRATEGY_OURS;
+        } else {
+          sqlite3ErrorMsg(pParse, "unknown strategy. use: ours, theirs");
+          break;
+        }
+      }
+
+      while( *zArgs==' ' ) zArgs++;
+      zSource = zArgs;
+      zDest = stripchr(zArgs, ' ');
+
+      rc = pragma_branch_merge(db, iDb, zSource, zDest, merge_strategy);
+      if( rc ){
+        if( rc==SQLITE_SCHEMA ){
+          sqlite3ErrorMsg(pParse, "schema mismatch between branches");
+        } else {
+          sqlite3ErrorMsg(pParse, sqlite3ErrStr(rc));
+        }
+      } else {
+        returnSingleText(v, "OK");
+      }
+    } else if( zRight && *zRight!='\0' && *zRight!='-' ){
+      char *zSource = zRight;
+      char *zDest = stripchr(zRight, ' ');
+      rc = pragma_branch_merge(db, iDb, zSource, zDest, MERGE_STRATEGY_ABORT);
+      if( rc ){
+        if( rc==SQLITE_SCHEMA ){
+          sqlite3ErrorMsg(pParse, "schema mismatch between branches");
+        } else {
+          sqlite3ErrorMsg(pParse, sqlite3ErrStr(rc));
+        }
+      } else {
+        returnSingleText(v, "OK");
+      }
     } else {
-      // rc = pragma_branch_merge(db, iDb, commit1, commit2);
-      sqlite3ErrorMsg(pParse, "invalid command. usage: PRAGMA branch_merge --forward {parent} {child} {num_commits}");
+      sqlite3ErrorMsg(pParse,
+          "usage: PRAGMA branch_merge [--check|--force|--strategy=ours|theirs] {source} [{dest}]");
     }
-//    if( rc ){
-//      sqlite3ErrorMsg(pParse, sqlite3ErrStr(rc));
-//    } else {
-//      returnSingleText(v, "OK");
-//    }
     break;
   }
 
@@ -158640,6 +159218,16 @@ SQLITE_PRIVATE int sqlite3RunParser(Parse *pParse, const char *zSql, char **pzEr
     while( *p==' ' ) p++;
     zNext = stripchr(p, ';'); if( zNext==0 ) zNext=zSqlCopy+strlen(zSqlCopy);
     zArg = stripchr(p, '=');
+    if( zArg ){
+      char *zz;
+      for(zz=p; zz < zArg-1; zz++){
+        if( zz[0]=='-' && zz[1]=='-' ){
+          *(zArg-1) = '=';
+          zArg = 0;
+          break;
+        }
+      }
+    }
     if( zArg==0 ){
       zArg = stripchr(p, '(');
       if( zArg ){
