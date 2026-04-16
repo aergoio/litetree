@@ -228831,8 +228831,17 @@ SQLITE_PRIVATE int pragma_branch_diff(
   const char *zLastTab = 0;
   int inTableObj = 0;
   int curSection = 0;    /* 0=none, 1=inserts, 2=updates, 3=deletes */
-  char **azMismatch = 0;   /* names of tables with a schema mismatch */
-  int nMismatch = 0;
+  /* Tables reported outside the normal changeset path.
+  **   azMismatch[i]  -> table name (owned)
+  **   aeMismatch[i]  -> 1=created (only on "to"),
+  **                     2=dropped (only on "from"),
+  **                     3=schema_mismatch (exists on both, different SQL) */
+  char **azMismatch = 0;
+  int   *aeMismatch = 0;
+  int    nMismatch = 0;
+#define BD_CREATED   1
+#define BD_DROPPED   2
+#define BD_MISMATCH  3
 
   if( pzResult ) *pzResult = 0;
   if( !pPager || !pPager->lmdb ) return SQLITE_ERROR;
@@ -228926,16 +228935,24 @@ SQLITE_PRIVATE int pragma_branch_diff(
         rc = sqlite3session_diff(pSession, "from_db", zTabName, &zErr);
         if( rc!=SQLITE_OK ) break;
       } else {
+        int kind = (!zSqlFrom) ? BD_CREATED
+                 : (!zSqlTo)   ? BD_DROPPED
+                 : BD_MISMATCH;
         char **azNew = sqlite3_realloc(azMismatch, sizeof(char*)*(nMismatch+1));
+        int   *aeNew = sqlite3_realloc(aeMismatch, sizeof(int)  *(nMismatch+1));
         char *zCopy = sqlite3_mprintf("%s", zTabName);
-        if( !azNew || !zCopy ){
-          sqlite3_free(azNew);
+        if( !azNew || !aeNew || !zCopy ){
+          if( azNew ) azMismatch = azNew;
+          if( aeNew ) aeMismatch = aeNew;
           sqlite3_free(zCopy);
           rc = SQLITE_NOMEM;
           break;
         }
         azMismatch = azNew;
-        azMismatch[nMismatch++] = zCopy;
+        aeMismatch = aeNew;
+        azMismatch[nMismatch] = zCopy;
+        aeMismatch[nMismatch] = kind;
+        nMismatch++;
       }
     }
     sqlite3_finalize(pTblStmt);
@@ -229207,21 +229224,116 @@ SQLITE_PRIVATE int pragma_branch_diff(
     }
   }
 
-  /* Tables with a schema mismatch are reported as a minimal stub so callers
-  ** can still see the table was affected without needing to parse SQL. */
+  /* Tables that don't appear in the normal changeset are emitted here.
+  ** - created/dropped: include columns, pk, and all rows as inserts/deletes
+  **   so consumers get a complete picture with the same shape as a regular
+  **   entry, just with an extra "created":true or "dropped":true marker.
+  ** - schema_mismatch: a minimal stub; columns don't align so we can't
+  **   produce a row-level diff. */
   {
     int iM;
     for(iM=0; iM<nMismatch; iM++){
       char *zName = azMismatch[iM];
+      int kind = aeMismatch[iM];
+      const char *zSchema;    /* "main" (created) or "from_db" (dropped) */
+      int nCol = 0;
       if( !zName ) continue;
-      /* emit "<name>":{"schema_mismatch":true}, prepending a comma if needed.
-      ** The previous char is the opening '{' of "tables":{ iff no real tables
-      ** have been emitted yet; any other char means we need a separator. */
+
+      /* comma separator between entries in the "tables" object */
       if( jx.zBuf && jx.nUsed>0 && jx.zBuf[jx.nUsed-1]!='{' ){
         jsonAppendChar(&jx, ',');
       }
       jsonAppendString(&jx, zName, (u32)strlen(zName));
-      jsonAppendRaw(&jx, ":{\"schema_mismatch\":true}", 25);
+      jsonAppendRaw(&jx, ":{", 2);
+
+      if( kind==BD_MISMATCH ){
+        jsonAppendRaw(&jx, "\"schema_mismatch\":true}", 23);
+        continue;
+      }
+
+      zSchema = (kind==BD_CREATED) ? "main" : "from_db";
+      jsonAppendRaw(&jx,
+          kind==BD_CREATED ? "\"created\":true," : "\"dropped\":true,", 15);
+
+      /* columns[] via PRAGMA <schema>.table_info(<tab>) */
+      jsonAppendString(&jx, "columns", 7);
+      jsonAppendRaw(&jx, ":[", 2);
+      {
+        sqlite3_stmt *pInfo = 0;
+        char *zQ = sqlite3_mprintf("PRAGMA %s.table_info(%Q)", zSchema, zName);
+        if( zQ ){
+          if( sqlite3_prepare(dbTo, zQ, -1, &pInfo, 0)==SQLITE_OK ){
+            int firstCol = 1;
+            while( sqlite3_step(pInfo)==SQLITE_ROW ){
+              const char *zCName = (const char *)sqlite3_column_text(pInfo, 1);
+              if( !zCName ) continue;
+              if( !firstCol ) jsonAppendChar(&jx, ',');
+              firstCol = 0;
+              jsonAppendString(&jx, zCName, (u32)strlen(zCName));
+              nCol++;
+            }
+            sqlite3_finalize(pInfo);
+          }
+          sqlite3_free(zQ);
+        }
+      }
+      jsonAppendRaw(&jx, "],", 2);
+
+      /* pk[] from the same PRAGMA (column 5 = pk index, !=0 means PK) */
+      jsonAppendString(&jx, "pk", 2);
+      jsonAppendRaw(&jx, ":[", 2);
+      {
+        sqlite3_stmt *pInfo = 0;
+        char *zQ = sqlite3_mprintf("PRAGMA %s.table_info(%Q)", zSchema, zName);
+        if( zQ ){
+          if( sqlite3_prepare(dbTo, zQ, -1, &pInfo, 0)==SQLITE_OK ){
+            int firstPk = 1;
+            while( sqlite3_step(pInfo)==SQLITE_ROW ){
+              const char *zCName = (const char *)sqlite3_column_text(pInfo, 1);
+              int pk = sqlite3_column_int(pInfo, 5);
+              if( pk>0 && zCName ){
+                if( !firstPk ) jsonAppendChar(&jx, ',');
+                firstPk = 0;
+                jsonAppendString(&jx, zCName, (u32)strlen(zCName));
+              }
+            }
+            sqlite3_finalize(pInfo);
+          }
+          sqlite3_free(zQ);
+        }
+      }
+      jsonAppendRaw(&jx, "],", 2);
+
+      /* rows -> all rows as inserts (created) or deletes (dropped) */
+      jsonAppendString(&jx,
+          kind==BD_CREATED ? "inserts" : "deletes",
+          7);
+      jsonAppendRaw(&jx, ":[", 2);
+      {
+        sqlite3_stmt *pRows = 0;
+        char *zQ = sqlite3_mprintf("SELECT * FROM %s.\"%w\"", zSchema, zName);
+        if( zQ ){
+          if( sqlite3_prepare(dbTo, zQ, -1, &pRows, 0)==SQLITE_OK ){
+            int firstRow = 1;
+            while( sqlite3_step(pRows)==SQLITE_ROW ){
+              int i;
+              int n = sqlite3_column_count(pRows);
+              if( !firstRow ) jsonAppendChar(&jx, ',');
+              firstRow = 0;
+              jsonAppendChar(&jx, '[');
+              for(i=0; i<n; i++){
+                if( i>0 ) jsonAppendChar(&jx, ',');
+                branchDiffAppendValue(&jx, sqlite3_column_value(pRows, i));
+              }
+              jsonAppendChar(&jx, ']');
+            }
+            sqlite3_finalize(pRows);
+          }
+          sqlite3_free(zQ);
+        }
+      }
+      jsonAppendChar(&jx, ']');
+      jsonAppendChar(&jx, '}');
     }
   }
 
@@ -229256,6 +229368,7 @@ loc_cleanup:
     for(iM=0; iM<nMismatch; iM++) sqlite3_free(azMismatch[iM]);
     sqlite3_free(azMismatch);
   }
+  if( aeMismatch ) sqlite3_free(aeMismatch);
   return rc;
 }
 

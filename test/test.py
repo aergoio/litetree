@@ -3430,9 +3430,13 @@ class TestSQLiteBranches(unittest.TestCase):
 
         conn.close()
 
-        # 7. Schema mismatch between the two points must NOT fail anymore.
-        # The affected table is reported with a "schema_mismatch" marker while
-        # other tables (with matching schemas) still diff normally.
+        # 7. Schema changes between the two points must NOT fail. Instead,
+        # each affected table is reported with one of:
+        #   - "schema_mismatch": true  -> same name, different CREATE stmt
+        #   - "created": true          -> exists only on "to"
+        #   - "dropped": true          -> exists only on "from"
+        # Created/dropped tables also carry columns, pk, and all rows as
+        # inserts/deletes so callers can still render them.
         delete_file("test5.db")
         delete_file("test5.db-lock")
         conn = sqlite3.connect("file:test5.db?branches=on")
@@ -3440,33 +3444,59 @@ class TestSQLiteBranches(unittest.TestCase):
 
         c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT)")
         c.execute("INSERT INTO t1 VALUES (1, 'alice')")
-        # second table whose schema will stay identical on both sides
+        # second table: schema stays identical on both sides
         c.execute("CREATE TABLE t2(id INTEGER PRIMARY KEY, val INTEGER)")
         c.execute("INSERT INTO t2 VALUES (1, 10)")
+        # third table: will be dropped on the "to" branch below
+        c.execute("CREATE TABLE t_dropped(id INTEGER PRIMARY KEY, payload TEXT)")
+        c.execute("INSERT INTO t_dropped VALUES (7, 'gone'), (8, 'bye')")
         conn.commit()
 
         c.execute("PRAGMA new_branch=schema_dev at master")
         c.execute("ALTER TABLE t1 ADD COLUMN extra TEXT")
         c.execute("UPDATE t1 SET extra='x' WHERE id=1")
         c.execute("INSERT INTO t2 VALUES (2, 20)")
-        # table that exists only on schema_dev
-        c.execute("CREATE TABLE t3(id INTEGER PRIMARY KEY)")
-        c.execute("INSERT INTO t3 VALUES (1)")
+        c.execute("DROP TABLE t_dropped")
+        # table that exists only on schema_dev (i.e. "created" vs master)
+        c.execute("CREATE TABLE t_created(id INTEGER PRIMARY KEY, lbl TEXT)")
+        c.execute("INSERT INTO t_created VALUES (1, 'new'), (2, 'row')")
         conn.commit()
 
         c.execute("PRAGMA branch=master")
         c.execute("PRAGMA branch_diff master schema_dev")
         raw = c.fetchone()[0]
         d = json.loads(raw)
+
+        # t1 -> schema differs (column added) => schema_mismatch
         self.assertIn("t1", d["tables"])
         self.assertEqual(d["tables"]["t1"], {"schema_mismatch": True})
-        self.assertIn("t3", d["tables"])
-        self.assertEqual(d["tables"]["t3"], {"schema_mismatch": True})
-        # t2 should be a normal DML diff (one insert)
-        self.assertIn("t2", d["tables"])
+
+        # t2 -> matching schema, normal DML diff
         t2 = d["tables"]["t2"]
         self.assertNotIn("schema_mismatch", t2)
+        self.assertNotIn("created", t2)
+        self.assertNotIn("dropped", t2)
         self.assertEqual(t2.get("inserts", []), [[2, 20]])
+
+        # t_created -> only on schema_dev (the "to" side)
+        self.assertIn("t_created", d["tables"])
+        tc = d["tables"]["t_created"]
+        self.assertTrue(tc.get("created"))
+        self.assertNotIn("dropped", tc)
+        self.assertNotIn("schema_mismatch", tc)
+        self.assertEqual(tc["columns"], ["id", "lbl"])
+        self.assertEqual(tc["pk"], ["id"])
+        self.assertEqual(tc["inserts"], [[1, "new"], [2, "row"]])
+
+        # t_dropped -> only on master (the "from" side)
+        self.assertIn("t_dropped", d["tables"])
+        td = d["tables"]["t_dropped"]
+        self.assertTrue(td.get("dropped"))
+        self.assertNotIn("created", td)
+        self.assertNotIn("schema_mismatch", td)
+        self.assertEqual(td["columns"], ["id", "payload"])
+        self.assertEqual(td["pk"], ["id"])
+        self.assertEqual(td["deletes"], [[7, "gone"], [8, "bye"]])
 
         conn.close()
 

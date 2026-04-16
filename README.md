@@ -180,17 +180,31 @@ It is also possible to truncate a branch at a specific commit, rename a branch, 
 	are filled in from the baseline table), so consumers can render
 	the complete before/after rows without extra lookups.
 
-	Only tables whose schemas match on both sides are diffed. A table
-	that is missing on one side or has a different `CREATE` statement
-	is still listed but with a single `"schema_mismatch": true` marker
-	in place of the `columns/pk/inserts/...` fields, e.g.:
+	Schema changes between the two points are reported as extra markers
+	on the affected table entry, so `branch_diff` never fails because
+	of a schema difference:
+
+	- A table that exists only on the `to` side gets `"created": true`
+	  alongside its `columns`, `pk`, and every row as `inserts`.
+	- A table that exists only on the `from` side gets `"dropped": true`
+	  alongside its `columns`, `pk`, and every row as `deletes`.
+	- A table that exists on both sides but with a different `CREATE`
+	  statement is reported with `"schema_mismatch": true` only (no
+	  row-level diff, since the columns don't align).
+
+	Example:
 	```json
 	"tables": {
-	  "t1": { "schema_mismatch": true },
-	  "t2": { "columns": ["id","val"], "pk": ["id"], "inserts": [[2,20]] }
+	  "t1":  { "schema_mismatch": true },
+	  "t2":  { "columns": ["id","val"], "pk": ["id"], "inserts": [[2,20]] },
+	  "new": { "created": true,  "columns": ["id","lbl"], "pk": ["id"],
+	           "inserts": [[1,"a"],[2,"b"]] },
+	  "old": { "dropped": true,  "columns": ["id","payload"], "pk": ["id"],
+	           "deletes": [[7,"gone"]] }
 	}
 	```
-	DDL-level diff is a future extension.
+	DDL-level diff (reporting the actual column/constraint changes for
+	`schema_mismatch` tables) is a future extension.
 
 #### Not yet available
 
