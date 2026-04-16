@@ -66695,18 +66695,21 @@ loc_failed:
 }
 
 /*
-** Called by the pragma branch_merge --forward command
+** Fast-forward merge entry point (child into parent). Called from pragma_branch_merge
+** when fast-forward topology is detected.
+**
+** zchild: child branch name (no dot suffix; already parsed by caller).
+** to_commit: merge up to this commit on the child branch; 0 = all commits.
 */
-SQLITE_PRIVATE int pragma_branch_forward_merge(sqlite3 *db, int iDb, char *zparent, char *zchild, char *znum_commits){
+SQLITE_PRIVATE int pragma_branch_forward_merge(sqlite3 *db, int iDb, char *zparent, char *zchild, u64 to_commit){
   Btree *pBtree = getBtreeFromiDb(db, iDb);
   Pager *pPager = getPagerFromBtree(pBtree);
   lmdb *lmdb;
   branch_info *parent, *child;
   int id_parent, id_child, rc;
-  u64 to_commit=0, num_commits=0;
-  char *zto_commit;
+  u64 num_commits=0;
 
-  BRANCHTRACE("forward merge parent=%s child=%s num_commits=%s", zparent, zchild, znum_commits);
+  BRANCHTRACE("forward merge parent=%s child=%s to_commit=%llu", zparent, zchild, to_commit);
 
   if( !pPager || !pPager->lmdb ) return SQLITE_ERROR;
   lmdb = pPager->lmdb;
@@ -66718,9 +66721,6 @@ SQLITE_PRIVATE int pragma_branch_forward_merge(sqlite3 *db, int iDb, char *zpare
     /* check if the db was modified in another db connection */
     if( (rc=sqlite3BranchCheckReloadDb(pPager,0))!=SQLITE_OK ) return rc;
   }
-
-  /* get the max commit, if present */
-  zto_commit = stripchr(zchild, '.');
 
   /* check if the parent branch is valid */
   id_parent = sqlite3BranchFind(lmdb, zparent);
@@ -66734,30 +66734,12 @@ SQLITE_PRIVATE int pragma_branch_forward_merge(sqlite3 *db, int iDb, char *zpare
 
   //! if( current->id == id_parent && current->max_commit != 0 ) return SQLITE_MISUSE;
 
-  /* check if both branches are valid */
-  if( znum_commits ){
-    num_commits = atou64(znum_commits);
-    if( num_commits==0 ) return SQLITE_MISUSE;
-  }
-  if( zto_commit ){
-    to_commit = atou64(zto_commit);
-    if( to_commit==0 ) return SQLITE_MISUSE;
-  }
-
-  /* these 2 values should not be supplied at the same time */
-  if( num_commits!=0 && to_commit!=0 ){
-    return SQLITE_MISUSE;
-  }
-
-  if( num_commits==0 && to_commit==0 ){
-    to_commit = child->last_commit;
-  }
-  if( to_commit > 0 ){
-    if( to_commit <= parent->last_commit ) return SQLITE_MISUSE;
-    if( to_commit > child->last_commit ) return SQLITE_MISUSE;
-    /* get the number of commits to copy */
-    num_commits = to_commit - parent->last_commit;
-  }
+  /* to_commit has already been validated and normalized by the caller
+  ** (pragma_branch_merge). Defensive fallback for other direct callers. */
+  if( to_commit==0 ) to_commit = child->last_commit;
+  if( to_commit <= parent->last_commit ) return SQLITE_MISUSE;
+  if( to_commit > child->last_commit ) return SQLITE_MISUSE;
+  num_commits = to_commit - parent->last_commit;
 
   rc = branch_forward_merge(lmdb, parent, child, num_commits);
   if( rc ) return rc;
@@ -67434,11 +67416,13 @@ static int merge_check_schemas(
 }
 
 /*
-** Main 3-way merge function.
+** Main merge: resolves branches, validates an optional source commit limit, then
+** picks the merge path. When the merge-base equals dest's current tip (i.e. dest
+** has not diverged), uses fast-forward regardless of strategy; otherwise runs a
+** 3-way session/changeset merge. A source suffix like dev.N merges up to commit N
+** only, and applies to both paths.
 **
 ** Called by: PRAGMA branch_merge [--check|--force|--strategy=ours|theirs] {source} [{dest}]
-**
-** Merges changes from source branch into dest branch (or current branch if dest is NULL).
 */
 SQLITE_PRIVATE int pragma_branch_merge(
   sqlite3 *db,
@@ -67488,7 +67472,8 @@ SQLITE_PRIVATE int pragma_branch_merge(
     if( !dest_branch ) return SQLITE_ERROR;
   }
 
-  /* resolve source branch */
+  /* strip optional .commit suffix from source (e.g. "dev.4" -> "dev", "4") */
+  char *zSourceCommit = stripchr(zSource, '.');
   {
     int id_source = sqlite3BranchFind(pLmdb, zSource);
     if( id_source <= 0 ) return SQLITE_NOTFOUND;
@@ -67497,23 +67482,40 @@ SQLITE_PRIVATE int pragma_branch_merge(
 
   if( source_branch->id == dest_branch->id ) return SQLITE_OK;
 
-  /* find common ancestor */
+  /* Validate and normalize the commit limit (if any). 0 means "all commits on source". */
+  u64 to_commit = 0;
+  if( zSourceCommit ){
+    to_commit = atou64(zSourceCommit);
+    if( to_commit==0 ) return SQLITE_MISUSE;              /* commit 0 is invalid */
+    if( to_commit > source_branch->last_commit ) return SQLITE_MISUSE;  /* out of range */
+  } else {
+    to_commit = source_branch->last_commit;
+  }
+
+  /* Find common ancestor for topology detection (and for 3-way below). */
   rc = find_common_ancestor(pLmdb, source_branch, dest_branch, &ancestor_branch, &ancestor_commit);
   if( rc!=SQLITE_OK ) return rc;
   if( !ancestor_branch ) return SQLITE_ERROR;
 
-  BRANCHTRACE("merge: source=%s dest=%s ancestor=%s.%llu",
-      source_branch->name, dest_branch->name,
+  BRANCHTRACE("merge: source=%s.%llu dest=%s ancestor=%s.%llu",
+      source_branch->name, to_commit, dest_branch->name,
       ancestor_branch->name, ancestor_commit);
 
-  /* if ancestor is at source's head, nothing to merge */
-  if( ancestor_commit >= source_branch->last_commit ){
+  /* If the requested source point is already in dest's history (at or below the
+  ** merge-base), there is nothing to merge — Git's "Already up to date." */
+  if( to_commit <= ancestor_commit ){
     return SQLITE_OK;
   }
 
-  /* if ancestor is dest's head, this is a fast-forward */
-  if( ancestor_commit == dest_branch->last_commit ){
-    /* could forward merge, but for now let the 3-way merge handle it */
+  /* Fast-forward topology: merge-base equals dest's current tip. No conflicts are
+  ** possible on a linear replay, so strategy is irrelevant; --check short-circuits
+  ** to OK since there is nothing to report. */
+  if( ancestor_commit==dest_branch->last_commit ){
+    if( strategy==MERGE_STRATEGY_CHECK ) return SQLITE_OK;
+    int rcFwd = pragma_branch_forward_merge(db, iDb, dest_branch->name, zSource, to_commit);
+    if( rcFwd==SQLITE_OK ) return SQLITE_OK;
+    if( rcFwd!=SQLITE_MISUSE ) return rcFwd;
+    /* Fast-forward not applicable (e.g. internal branch chain); use 3-way. */
   }
 
   /* open internal connection for diff computation */
@@ -67523,14 +67525,15 @@ SQLITE_PRIVATE int pragma_branch_merge(
   zUri = sqlite3_mprintf("file:%s?branches=on&single_connection=true", zFilename);
   if( !zUri ) return SQLITE_NOMEM;
 
-  /* connection 1: set to source branch */
+  /* connection 1: set to source branch, optionally pinned to to_commit */
   rc = sqlite3_open(zUri, &dbInternal);
   if( rc!=SQLITE_OK ){
     sqlite3_free(zUri);
     return rc;
   }
 
-  sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA branch=%s", zSource);
+  sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA branch=%s.%llu",
+      zSource, to_commit);
   rc = sqlite3_exec(dbInternal, zPragma, 0, 0, &zErr);
   if( rc!=SQLITE_OK ) goto loc_cleanup;
 
@@ -129067,18 +129070,7 @@ SQLITE_PRIVATE void sqlite3Pragma(
   }
 
   case PragTyp_BRANCH_MERGE: {
-    if( strncmp(zRight,"--forward ",10)==0 ){
-      char *zSource, *zDest, *znum_commits;
-      zSource = stripchr(zRight, ' ');
-      zDest = stripchr(zSource, ' ');
-      znum_commits = stripchr(zDest, ' ');
-      rc = pragma_branch_forward_merge(db, iDb, zDest, zSource, znum_commits);
-      if( rc ){
-        sqlite3ErrorMsg(pParse, sqlite3ErrStr(rc));
-      } else {
-        returnSingleText(v, "OK");
-      }
-    } else if( strncmp(zRight,"--check ",8)==0 ||
+    if( strncmp(zRight,"--check ",8)==0 ||
                strncmp(zRight,"--force ",8)==0 ||
                strncmp(zRight,"--strategy=",11)==0 ){
       int merge_strategy = MERGE_STRATEGY_ABORT;
@@ -129124,7 +129116,18 @@ SQLITE_PRIVATE void sqlite3Pragma(
       }
     } else if( zRight && *zRight!='\0' && *zRight!='-' ){
       char *zSource = zRight;
-      char *zDest = stripchr(zRight, ' ');
+      char *zMid = stripchr(zRight, ' ');
+      char *zExtra = 0;
+      char *zDest = 0;
+      if( zMid ){
+        zDest = zMid;
+        zExtra = stripchr(zMid, ' ');
+      }
+      if( zExtra ){
+        sqlite3ErrorMsg(pParse,
+            "usage: PRAGMA branch_merge [--check|--force|--strategy=ours|theirs] {source} [{dest}]");
+        break;
+      }
       rc = pragma_branch_merge(db, iDb, zSource, zDest, MERGE_STRATEGY_ABORT);
       if( rc ){
         if( rc==SQLITE_SCHEMA ){
@@ -129137,8 +129140,7 @@ SQLITE_PRIVATE void sqlite3Pragma(
       }
     } else {
       sqlite3ErrorMsg(pParse,
-          "usage: PRAGMA branch_merge --forward {source} {dest} [{num_commits}] | "
-          "[--check|--force|--strategy=ours|theirs] {source} [{dest}]");
+          "usage: PRAGMA branch_merge [--check|--force|--strategy=ours|theirs] {source} [{dest}]");
     }
     break;
   }

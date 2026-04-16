@@ -2124,24 +2124,27 @@ class TestSQLiteBranches(unittest.TestCase):
 
         # test invalid parameters
         with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev master 0")
+            c1.execute("pragma branch_merge dev master 0")
         with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev master -1")
+            c1.execute("pragma branch_merge dev master -1")
         with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev master -2")
+            c1.execute("pragma branch_merge dev master -2")
         with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.0 master")
+            c1.execute("pragma branch_merge dev.0 master")
         with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.1 master")
+            c1.execute("pragma branch_merge dev.10 master")
         with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.2 master")
-        with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.10 master")
-        with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.3 master 1")
+            c1.execute("pragma branch_merge dev.3 master 1")
 
-        # move 2 commits from child branch to master
-        c1.execute("pragma branch_merge --forward dev master 2")
+        # commits that are at or below the merge-base are a no-op (Git's
+        # "Already up to date.") and return OK, not an error.
+        c1.execute("pragma branch_merge dev.1 master")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+        c1.execute("pragma branch_merge dev.2 master")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+
+        # move up to commit 4 from child branch to master (equivalent to 2 commits)
+        c1.execute("pragma branch_merge dev.4 master")
         self.assertListEqual(c1.fetchall(), [("OK",)])
 
 
@@ -2280,18 +2283,18 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertEqual(c1.fetchone()[0], "master")
 
 
-        # test invalid parameters
-        with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.1 master")
-        with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.2 master")
-        with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.3 master")
-        with self.assertRaises(sqlite3.OperationalError):
-            c1.execute("pragma branch_merge --forward dev.4 master")
+        # commits at or below the merge-base are a no-op (Git's "Already up to date.")
+        c1.execute("pragma branch_merge dev.1 master")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+        c1.execute("pragma branch_merge dev.2 master")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+        c1.execute("pragma branch_merge dev.3 master")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
+        c1.execute("pragma branch_merge dev.4 master")
+        self.assertListEqual(c1.fetchall(), [("OK",)])
 
         # move up to commit 6 from child branch to master
-        c1.execute("pragma branch_merge --forward dev.6 master")
+        c1.execute("pragma branch_merge dev.6 master")
         self.assertListEqual(c1.fetchall(), [("OK",)])
 
 
@@ -2655,7 +2658,7 @@ class TestSQLiteBranches(unittest.TestCase):
 
 
         # test forward merge using the last of a chain of branches
-        c1.execute("pragma branch_merge --forward last master 2")
+        c1.execute("pragma branch_merge last.3 master")
         self.assertListEqual(c1.fetchall(), [("OK",)])
 
 
@@ -2667,7 +2670,7 @@ class TestSQLiteBranches(unittest.TestCase):
 
 
         # test forward merge using the last of a chain of branches
-        c1.execute("pragma branch_merge --forward last master")
+        c1.execute("pragma branch_merge last master")
         self.assertListEqual(c1.fetchall(), [("OK",)])
 
 
