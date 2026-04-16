@@ -228831,6 +228831,8 @@ SQLITE_PRIVATE int pragma_branch_diff(
   const char *zLastTab = 0;
   int inTableObj = 0;
   int curSection = 0;    /* 0=none, 1=inserts, 2=updates, 3=deletes */
+  char **azMismatch = 0;   /* names of tables with a schema mismatch */
+  int nMismatch = 0;
 
   if( pzResult ) *pzResult = 0;
   if( !pPager || !pPager->lmdb ) return SQLITE_ERROR;
@@ -228876,10 +228878,7 @@ SQLITE_PRIVATE int pragma_branch_diff(
   sqlite3_free(zUri);
   zUri = 0;
 
-  /* require identical schema on both sides (DML-only for now) */
-  rc = merge_check_schemas(dbTo, dbFrom);
-  if( rc!=SQLITE_OK ) goto loc_cleanup;
-
+  /* attach the "from" side so sqlite3session_diff can compare live tables */
   {
     char *zAttachUri = sqlite3_mprintf("file:%s?branches=on&single_connection=true", zFilename);
     char *zAttachSql;
@@ -228900,19 +228899,44 @@ SQLITE_PRIVATE int pragma_branch_diff(
   rc = sqlite3session_create(dbTo, "main", &pSession);
   if( rc!=SQLITE_OK ) goto loc_cleanup;
 
+  /* Iterate over the union of table names on both sides. Tables whose schema
+  ** matches are diffed normally; tables that are missing on one side or have
+  ** a different CREATE statement are tracked as "schema mismatch" and emitted
+  ** as a stub table entry so callers can surface them without a hard error. */
   {
     sqlite3_stmt *pTblStmt = 0;
     rc = sqlite3_prepare(dbTo,
-        "SELECT name FROM sqlite_master WHERE type='table' "
-        "AND name NOT LIKE 'sqlite_%' ORDER BY name", -1, &pTblStmt, 0);
+        "SELECT name, "
+        "       (SELECT sql FROM main.sqlite_master    WHERE type='table' AND name=u.name), "
+        "       (SELECT sql FROM from_db.sqlite_master WHERE type='table' AND name=u.name) "
+        "FROM ("
+        "  SELECT name FROM main.sqlite_master    WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+        "  UNION "
+        "  SELECT name FROM from_db.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' "
+        ") AS u ORDER BY name", -1, &pTblStmt, 0);
     if( rc!=SQLITE_OK ) goto loc_cleanup;
     while( sqlite3_step(pTblStmt)==SQLITE_ROW ){
       const char *zTabName = (const char *)sqlite3_column_text(pTblStmt, 0);
+      const char *zSqlTo   = (const char *)sqlite3_column_text(pTblStmt, 1);
+      const char *zSqlFrom = (const char *)sqlite3_column_text(pTblStmt, 2);
       if( !zTabName ) continue;
-      rc = sqlite3session_attach(pSession, zTabName);
-      if( rc!=SQLITE_OK ) break;
-      rc = sqlite3session_diff(pSession, "from_db", zTabName, &zErr);
-      if( rc!=SQLITE_OK ) break;
+      if( zSqlTo && zSqlFrom && sqlite3_stricmp(zSqlTo, zSqlFrom)==0 ){
+        rc = sqlite3session_attach(pSession, zTabName);
+        if( rc!=SQLITE_OK ) break;
+        rc = sqlite3session_diff(pSession, "from_db", zTabName, &zErr);
+        if( rc!=SQLITE_OK ) break;
+      } else {
+        char **azNew = sqlite3_realloc(azMismatch, sizeof(char*)*(nMismatch+1));
+        char *zCopy = sqlite3_mprintf("%s", zTabName);
+        if( !azNew || !zCopy ){
+          sqlite3_free(azNew);
+          sqlite3_free(zCopy);
+          rc = SQLITE_NOMEM;
+          break;
+        }
+        azMismatch = azNew;
+        azMismatch[nMismatch++] = zCopy;
+      }
     }
     sqlite3_finalize(pTblStmt);
     if( rc!=SQLITE_OK ) goto loc_cleanup;
@@ -229183,6 +229207,24 @@ SQLITE_PRIVATE int pragma_branch_diff(
     }
   }
 
+  /* Tables with a schema mismatch are reported as a minimal stub so callers
+  ** can still see the table was affected without needing to parse SQL. */
+  {
+    int iM;
+    for(iM=0; iM<nMismatch; iM++){
+      char *zName = azMismatch[iM];
+      if( !zName ) continue;
+      /* emit "<name>":{"schema_mismatch":true}, prepending a comma if needed.
+      ** The previous char is the opening '{' of "tables":{ iff no real tables
+      ** have been emitted yet; any other char means we need a separator. */
+      if( jx.zBuf && jx.nUsed>0 && jx.zBuf[jx.nUsed-1]!='{' ){
+        jsonAppendChar(&jx, ',');
+      }
+      jsonAppendString(&jx, zName, (u32)strlen(zName));
+      jsonAppendRaw(&jx, ":{\"schema_mismatch\":true}", 25);
+    }
+  }
+
   jsonAppendChar(&jx, '}');   /* close "tables" */
   jsonAppendChar(&jx, '}');   /* close top-level */
   jsonAppendChar(&jx, 0);     /* null terminator */
@@ -229209,6 +229251,11 @@ loc_cleanup:
   if( pChangeset ) sqlite3_free(pChangeset);
   if( zErr ) sqlite3_free(zErr);
   if( bJsonInit && !jx.bStatic ) sqlite3_free(jx.zBuf);
+  if( azMismatch ){
+    int iM;
+    for(iM=0; iM<nMismatch; iM++) sqlite3_free(azMismatch[iM]);
+    sqlite3_free(azMismatch);
+  }
   return rc;
 }
 

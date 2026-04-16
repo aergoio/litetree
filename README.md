@@ -180,10 +180,17 @@ It is also possible to truncate a branch at a specific commit, rename a branch, 
 	are filled in from the baseline table), so consumers can render
 	the complete before/after rows without extra lookups.
 
-	Only tables whose schemas match on both sides are diffed; if a
-	table is missing on one side or has a different `CREATE` statement,
-	`branch_diff` fails with `SQLITE_SCHEMA`. DDL-level diff is a
-	future extension.
+	Only tables whose schemas match on both sides are diffed. A table
+	that is missing on one side or has a different `CREATE` statement
+	is still listed but with a single `"schema_mismatch": true` marker
+	in place of the `columns/pk/inserts/...` fields, e.g.:
+	```json
+	"tables": {
+	  "t1": { "schema_mismatch": true },
+	  "t2": { "columns": ["id","val"], "pk": ["id"], "inserts": [[2,20]] }
+	}
+	```
+	DDL-level diff is a future extension.
 
 #### Not yet available
 

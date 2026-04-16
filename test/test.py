@@ -3430,7 +3430,9 @@ class TestSQLiteBranches(unittest.TestCase):
 
         conn.close()
 
-        # 7. Schema mismatch between the two points must fail.
+        # 7. Schema mismatch between the two points must NOT fail anymore.
+        # The affected table is reported with a "schema_mismatch" marker while
+        # other tables (with matching schemas) still diff normally.
         delete_file("test5.db")
         delete_file("test5.db-lock")
         conn = sqlite3.connect("file:test5.db?branches=on")
@@ -3438,16 +3440,33 @@ class TestSQLiteBranches(unittest.TestCase):
 
         c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT)")
         c.execute("INSERT INTO t1 VALUES (1, 'alice')")
+        # second table whose schema will stay identical on both sides
+        c.execute("CREATE TABLE t2(id INTEGER PRIMARY KEY, val INTEGER)")
+        c.execute("INSERT INTO t2 VALUES (1, 10)")
         conn.commit()
 
         c.execute("PRAGMA new_branch=schema_dev at master")
         c.execute("ALTER TABLE t1 ADD COLUMN extra TEXT")
         c.execute("UPDATE t1 SET extra='x' WHERE id=1")
+        c.execute("INSERT INTO t2 VALUES (2, 20)")
+        # table that exists only on schema_dev
+        c.execute("CREATE TABLE t3(id INTEGER PRIMARY KEY)")
+        c.execute("INSERT INTO t3 VALUES (1)")
         conn.commit()
 
         c.execute("PRAGMA branch=master")
-        with self.assertRaises(sqlite3.OperationalError):
-            c.execute("PRAGMA branch_diff master schema_dev")
+        c.execute("PRAGMA branch_diff master schema_dev")
+        raw = c.fetchone()[0]
+        d = json.loads(raw)
+        self.assertIn("t1", d["tables"])
+        self.assertEqual(d["tables"]["t1"], {"schema_mismatch": True})
+        self.assertIn("t3", d["tables"])
+        self.assertEqual(d["tables"]["t3"], {"schema_mismatch": True})
+        # t2 should be a normal DML diff (one insert)
+        self.assertIn("t2", d["tables"])
+        t2 = d["tables"]["t2"]
+        self.assertNotIn("schema_mismatch", t2)
+        self.assertEqual(t2.get("inserts", []), [[2, 20]])
 
         conn.close()
 
