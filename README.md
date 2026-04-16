@@ -149,6 +149,41 @@ It is also possible to truncate a branch at a specific commit, rename a branch, 
 	```
 	PRAGMA branch_log(<name>)
 	```
+- Showing the row-level diff between 2 branches or commits:
+	```
+	PRAGMA branch_diff <from_branch>[.<commit>] <to_branch>[.<commit>]
+	```
+	The command returns a single JSON document describing the set of
+	inserts, deletes and updates that turn the `from` point into the
+	`to` point:
+	```json
+	{
+	  "from": "master.2",
+	  "to":   "dev.3",
+	  "tables": {
+	    "t1": {
+	      "columns": ["id", "name", "value"],
+	      "pk":      ["id"],
+	      "inserts": [ [3, "charlie", 30] ],
+	      "deletes": [ [2, "bob", 20] ],
+	      "updates": [
+	        {"old": [1, "alice", 10], "new": [1, "alice", 99]}
+	      ]
+	    }
+	  }
+	}
+	```
+	Each row is emitted as a positional array aligned with `columns`.
+	NULLs become JSON `null`, numbers stay numbers, text becomes a
+	string and blobs are wrapped as `{"blob":"<hex>"}`. For updates,
+	both `old` and `new` carry the full row image (unchanged columns
+	are filled in from the baseline table), so consumers can render
+	the complete before/after rows without extra lookups.
+
+	Only tables whose schemas match on both sides are diffed; if a
+	table is missing on one side or has a different `CREATE` statement,
+	`branch_diff` fails with `SQLITE_SCHEMA`. DDL-level diff is a
+	future extension.
 
 #### Not yet available
 
@@ -157,10 +192,6 @@ Some of these commands are being developed:
 - Modifying a commit:
 	```
 	PRAGMA branch_log [--set|--add|--del] <name> <sql commands>
-	```
-- Showing the diff between 2 branches or commits:
-	```
-	PRAGMA branch_diff <from_branch>[.<commit>] <to_branch>[.<commit>]
 	```
 - [Save metadata to each branch and/or commit](https://github.com/aergoio/litetree/wiki/Storing-metadata)
 - [Merging 2 branches](https://github.com/aergoio/litetree/wiki/Merging-branches)

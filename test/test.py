@@ -3355,6 +3355,103 @@ class TestSQLiteBranches(unittest.TestCase):
 
 
 
+    def test24_branch_diff(self):
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (1, 'alice', 10)")
+        c.execute("INSERT INTO t1 VALUES (2, 'bob', 20)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t1 VALUES (3, 'charlie', 30)")
+        c.execute("DELETE FROM t1 WHERE id=2")
+        c.execute("UPDATE t1 SET value=99 WHERE id=1")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+
+        # 1. forward diff (master -> dev) covers insert, delete, update
+        c.execute("PRAGMA branch_diff master dev")
+        raw = c.fetchone()[0]
+        self.assertIsNotNone(raw)
+        d = json.loads(raw)
+        self.assertIn("from", d)
+        self.assertIn("to", d)
+        self.assertIn("tables", d)
+        self.assertIn("t1", d["tables"])
+        tbl = d["tables"]["t1"]
+        self.assertEqual(tbl["columns"], ["id", "name", "value"])
+        self.assertEqual(tbl["pk"], ["id"])
+        self.assertEqual(tbl.get("inserts", []), [[3, "charlie", 30]])
+        self.assertEqual(tbl.get("deletes", []), [[2, "bob", 20]])
+        self.assertEqual(len(tbl.get("updates", [])), 1)
+        u = tbl["updates"][0]
+        self.assertEqual(u["old"], [1, "alice", 10])
+        self.assertEqual(u["new"], [1, "alice", 99])
+
+        # 2. empty diff (same branch on both sides)
+        c.execute("PRAGMA branch_diff master master")
+        d2 = json.loads(c.fetchone()[0])
+        self.assertEqual(d2["tables"], {})
+
+        # 3. reverse direction (dev -> master) swaps inserts/deletes and
+        # inverts the update
+        c.execute("PRAGMA branch_diff dev master")
+        d3 = json.loads(c.fetchone()[0])
+        tbl3 = d3["tables"]["t1"]
+        self.assertEqual(tbl3.get("inserts", []), [[2, "bob", 20]])
+        self.assertEqual(tbl3.get("deletes", []), [[3, "charlie", 30]])
+        u3 = tbl3["updates"][0]
+        self.assertEqual(u3["old"], [1, "alice", 99])
+        self.assertEqual(u3["new"], [1, "alice", 10])
+
+        # 4. partial commit (branch.N) — diff against an intermediate point.
+        # dev was forked at master.2 so dev.2 == master.2 (empty diff).
+        c.execute("PRAGMA branch_diff master dev.2")
+        d4 = json.loads(c.fetchone()[0])
+        self.assertEqual(d4["tables"], {})
+        self.assertEqual(d4["to"], "dev.2")
+
+        # 5. invalid branch -> error
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_diff bogus master")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_diff master bogus")
+
+        # 6. missing "to" argument -> usage error
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_diff master")
+
+        conn.close()
+
+        # 7. Schema mismatch between the two points must fail.
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT)")
+        c.execute("INSERT INTO t1 VALUES (1, 'alice')")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=schema_dev at master")
+        c.execute("ALTER TABLE t1 ADD COLUMN extra TEXT")
+        c.execute("UPDATE t1 SET extra='x' WHERE id=1")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_diff master schema_dev")
+
+        conn.close()
+
+
     @classmethod
     def tearDownClass(self):
         delete_file("test.db")

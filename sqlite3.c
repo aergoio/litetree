@@ -15841,6 +15841,7 @@ SQLITE_PRIVATE int    pragma_truncate_branch(sqlite3 *db, int iDb, char *name, u
 SQLITE_PRIVATE int    pragma_delete_branch(sqlite3 *db, int iDb, char *name);
 #endif
 SQLITE_PRIVATE char * pragma_get_branch_info(sqlite3 *db, int iDb, char *name);
+SQLITE_PRIVATE int    pragma_branch_diff(sqlite3 *db, int iDb, char *zFrom, char *zTo, char **pzResult);
 SQLITE_PRIVATE int    pragma_branch_merge(sqlite3 *db, int iDb, char *zSource, char *zDest, int strategy);
 SQLITE_PRIVATE int    find_common_ancestor(lmdb *lmdb, branch_info *source, branch_info *dest, branch_info **pAncestorBranch, u64 *pAncestorCommit);
 #ifndef OMIT_BRANCH_LOG
@@ -66500,17 +66501,12 @@ SQLITE_PRIVATE int pragma_branch_edit_log(sqlite3 *db, int iDb, int command, cha
 
 /*
 ** PRAGMA branch_diff {from_branch}[.{commit}] {to_branch}[.{commit}]
+**
+** The real implementation lives at the bottom of the file alongside the other
+** JSON-returning branch pragmas (pragma_get_branch_info etc.) because it needs
+** access to the jsonInit/jsonAppend* helpers, which are file-static and
+** defined later in the amalgamation.
 */
-SQLITE_PRIVATE char * pragma_branch_diff(sqlite3 *db, int iDb, char *point1, char *point2){
-
-
-  //! to implement
-
-
-  return sqlite3_strdup("OK");
-
-
-}
 
 /*
 ** Merges forward commits from a single direct child branch into the parent branch
@@ -129056,15 +129052,27 @@ SQLITE_PRIVATE void sqlite3Pragma(
 #endif
 
   case PragTyp_BRANCH_DIFF: {
-    char *commit1, *commit2, *result;
-    commit1 = zRight;
-    commit2 = stripchr(commit1, ' ');
-    result = pragma_branch_diff(db, iDb, commit1, commit2);
-    //result = pragma_branch_diff(pDb, commit1, commit2);
-    //result = pragma_branch_diff(pDb->pBt, commit1, commit2);
-    if( result ){
-      returnSingleText(v, result);
-      sqlite3_free(result);
+    char *zFrom, *zTo, *zResult = 0;
+    if( zRight==0 || zRight[0]==0 ){
+      sqlite3ErrorMsg(pParse, "usage: PRAGMA branch_diff {from}[.{commit}] {to}[.{commit}]");
+      break;
+    }
+    zFrom = zRight;
+    zTo = stripchr(zFrom, ' ');
+    if( zTo ){
+      while( *zTo==' ' ) zTo++;
+      if( *zTo==0 ) zTo = 0;
+    }
+    if( zTo==0 ){
+      sqlite3ErrorMsg(pParse, "usage: PRAGMA branch_diff {from}[.{commit}] {to}[.{commit}]");
+      break;
+    }
+    rc = pragma_branch_diff(db, iDb, zFrom, zTo, &zResult);
+    if( rc!=SQLITE_OK ){
+      sqlite3ErrorMsg(pParse, sqlite3ErrStr(rc));
+    } else if( zResult ){
+      returnSingleText(v, zResult);
+      sqlite3_free(zResult);
     }
     break;
   }
@@ -228683,6 +228691,527 @@ SQLITE_PRIVATE char * pragma_get_branch_info(sqlite3 *db, int iDb, char *name){
   }
   return jx.zBuf;
 }
+
+/*****************************************************************************/
+
+/*
+** Append a single sqlite3_value as a JSON value (number, string, null, or
+** hex-encoded blob). Used by pragma_branch_diff to serialize row data.
+*/
+static void branchDiffAppendValue(JsonString *p, sqlite3_value *pVal){
+  if( pVal==0 ){
+    jsonAppendRaw(p, "null", 4);
+    return;
+  }
+  switch( sqlite3_value_type(pVal) ){
+    case SQLITE_NULL:
+      jsonAppendRaw(p, "null", 4);
+      break;
+    case SQLITE_INTEGER:
+    case SQLITE_FLOAT: {
+      const char *z = (const char*)sqlite3_value_text(pVal);
+      u32 n = (u32)sqlite3_value_bytes(pVal);
+      if( z ) jsonAppendRaw(p, z, n);
+      else jsonAppendRaw(p, "null", 4);
+      break;
+    }
+    case SQLITE_TEXT: {
+      const char *z = (const char*)sqlite3_value_text(pVal);
+      u32 n = (u32)sqlite3_value_bytes(pVal);
+      jsonAppendString(p, z ? z : "", z ? n : 0);
+      break;
+    }
+    case SQLITE_BLOB: {
+      /* encode as {"blob":"<hex>"} so the consumer can distinguish it */
+      static const char hex[] = "0123456789abcdef";
+      const unsigned char *b = (const unsigned char*)sqlite3_value_blob(pVal);
+      u32 n = (u32)sqlite3_value_bytes(pVal), i;
+      jsonAppendRaw(p, "{\"blob\":\"", 9);
+      for(i=0; i<n; i++){
+        char pair[2];
+        pair[0] = hex[(b[i]>>4)&0xF];
+        pair[1] = hex[b[i]&0xF];
+        jsonAppendRaw(p, pair, 2);
+      }
+      jsonAppendRaw(p, "\"}", 2);
+      break;
+    }
+    default:
+      jsonAppendRaw(p, "null", 4);
+      break;
+  }
+}
+
+/*
+** Resolve a "{branch}[.{commit}]" point spec. Splits zPoint into branch name
+** and an optional commit number (0 means "tip"). Returns SQLITE_NOTFOUND if
+** the branch does not exist, SQLITE_MISUSE for an invalid commit value.
+*/
+static int branchDiffResolvePoint(
+  lmdb *pLmdb, char *zPoint, branch_info **ppBranch, u64 *pCommit
+){
+  char *zCommit;
+  int id;
+  u64 commit = 0;
+
+  if( !zPoint || !zPoint[0] ) return SQLITE_MISUSE;
+
+  zCommit = stripchr(zPoint, '.');
+  id = sqlite3BranchFind(pLmdb, zPoint);
+  if( id<=0 ) return SQLITE_NOTFOUND;
+  *ppBranch = &pLmdb->branches[id];
+
+  if( zCommit ){
+    commit = atou64(zCommit);
+    if( commit==0 ) return SQLITE_MISUSE;
+    if( commit > (*ppBranch)->last_commit ) return SQLITE_MISUSE;
+  } else {
+    commit = (*ppBranch)->last_commit;
+  }
+  *pCommit = commit;
+  return SQLITE_OK;
+}
+
+/*
+** PRAGMA branch_diff {from}[.{commit}] {to}[.{commit}]
+**
+** Computes the set of row-level changes that turn the {from} point into the
+** {to} point and returns them as a JSON document. The format is:
+**
+**   {
+**     "from": "<branch>.<commit>",
+**     "to":   "<branch>.<commit>",
+**     "tables": {
+**       "<tbl>": {
+**         "columns": ["c1","c2",...],
+**         "pk": ["c1"],
+**         "inserts": [ [v1,v2,...], ... ],
+**         "deletes": [ [v1,v2,...], ... ],
+**         "updates": [ {"old":[...], "new":[...]}, ... ]
+**       },
+**       ...
+**     }
+**   }
+**
+** Only tables present in both points with matching schemas are diffed. Each
+** row is emitted as a positional array aligned with "columns"; NULLs are
+** JSON null, numbers are numbers, text is a string, blobs become
+** {"blob":"<hex>"}. For UPDATE changes, "new" carries the full post-image
+** (unchanged columns are taken from the old row so consumers can display the
+** whole row without extra lookups).
+**
+** Schema differences (a table added, dropped, or with a different CREATE
+** statement) cause SQLITE_SCHEMA to be returned. DDL-aware diff is a future
+** extension.
+*/
+SQLITE_PRIVATE int pragma_branch_diff(
+  sqlite3 *db,
+  int iDb,
+  char *zFrom,
+  char *zTo,
+  char **pzResult
+){
+  Btree *pBtree = getBtreeFromiDb(db, iDb);
+  Pager *pPager = getPagerFromBtree(pBtree);
+  lmdb *pLmdb;
+  branch_info *fromBranch = 0, *toBranch = 0;
+  u64 fromCommit = 0, toCommit = 0;
+  sqlite3 *dbFrom = 0, *dbTo = 0;
+  sqlite3_session *pSession = 0;
+  sqlite3_changeset_iter *pIter = 0;
+  int nChangeset = 0;
+  void *pChangeset = 0;
+  char *zErr = 0;
+  char *zFilename = 0;
+  char *zUri = 0;
+  char zPragma[512];
+  int rc;
+  JsonString jx;
+  int bJsonInit = 0;
+  const char *zLastTab = 0;
+  int inTableObj = 0;
+  int curSection = 0;    /* 0=none, 1=inserts, 2=updates, 3=deletes */
+
+  if( pzResult ) *pzResult = 0;
+  if( !pPager || !pPager->lmdb ) return SQLITE_ERROR;
+  pLmdb = pPager->lmdb;
+
+  if( pLmdb->inReadTxn || pLmdb->inWriteTxn ) return SQLITE_MISUSE;
+
+  if( !pLmdb->singleConnection ){
+    rc = sqlite3BranchCheckReloadDb(pPager, 0);
+    if( rc!=SQLITE_OK ) return rc;
+  }
+
+  rc = branchDiffResolvePoint(pLmdb, zFrom, &fromBranch, &fromCommit);
+  if( rc!=SQLITE_OK ) return rc;
+  rc = branchDiffResolvePoint(pLmdb, zTo, &toBranch, &toCommit);
+  if( rc!=SQLITE_OK ) return rc;
+
+  BRANCHTRACE("branch_diff: from=%s.%llu to=%s.%llu",
+      fromBranch->name, fromCommit, toBranch->name, toCommit);
+
+  /* open two internal read-only connections: one at "to" (session target),
+  ** one at "from" (attached as from_db for the diff baseline). */
+  zFilename = (char *)sqlite3_db_filename(db, "main");
+  if( !zFilename ) return SQLITE_ERROR;
+
+  zUri = sqlite3_mprintf("file:%s?branches=on&single_connection=true", zFilename);
+  if( !zUri ) return SQLITE_NOMEM;
+
+  rc = sqlite3_open(zUri, &dbTo);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+  sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA branch=%s.%llu",
+      toBranch->name, toCommit);
+  rc = sqlite3_exec(dbTo, zPragma, 0, 0, &zErr);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  rc = sqlite3_open(zUri, &dbFrom);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+  sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA branch=%s.%llu",
+      fromBranch->name, fromCommit);
+  rc = sqlite3_exec(dbFrom, zPragma, 0, 0, &zErr);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  sqlite3_free(zUri);
+  zUri = 0;
+
+  /* require identical schema on both sides (DML-only for now) */
+  rc = merge_check_schemas(dbTo, dbFrom);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  {
+    char *zAttachUri = sqlite3_mprintf("file:%s?branches=on&single_connection=true", zFilename);
+    char *zAttachSql;
+    if( !zAttachUri ){ rc = SQLITE_NOMEM; goto loc_cleanup; }
+    zAttachSql = sqlite3_mprintf("ATTACH '%q' AS from_db", zAttachUri);
+    sqlite3_free(zAttachUri);
+    if( !zAttachSql ){ rc = SQLITE_NOMEM; goto loc_cleanup; }
+    rc = sqlite3_exec(dbTo, zAttachSql, 0, 0, &zErr);
+    sqlite3_free(zAttachSql);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+    sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA from_db.branch=%s.%llu",
+        fromBranch->name, fromCommit);
+    rc = sqlite3_exec(dbTo, zPragma, 0, 0, &zErr);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+  }
+
+  rc = sqlite3session_create(dbTo, "main", &pSession);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+  {
+    sqlite3_stmt *pTblStmt = 0;
+    rc = sqlite3_prepare(dbTo,
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY name", -1, &pTblStmt, 0);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+    while( sqlite3_step(pTblStmt)==SQLITE_ROW ){
+      const char *zTabName = (const char *)sqlite3_column_text(pTblStmt, 0);
+      if( !zTabName ) continue;
+      rc = sqlite3session_attach(pSession, zTabName);
+      if( rc!=SQLITE_OK ) break;
+      rc = sqlite3session_diff(pSession, "from_db", zTabName, &zErr);
+      if( rc!=SQLITE_OK ) break;
+    }
+    sqlite3_finalize(pTblStmt);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+  }
+
+  rc = sqlite3session_changeset(pSession, &nChangeset, &pChangeset);
+  if( rc!=SQLITE_OK ) goto loc_cleanup;
+  sqlite3session_delete(pSession);
+  pSession = 0;
+
+  jsonInit(&jx, NULL);
+  bJsonInit = 1;
+  jsonAppendChar(&jx, '{');
+
+  jsonAppendString(&jx, "from", 4);
+  jsonAppendRaw(&jx, ":", 1);
+  {
+    char zBuf[128];
+    sqlite3_snprintf(sizeof(zBuf), zBuf, "%s.%llu", fromBranch->name, fromCommit);
+    jsonAppendString(&jx, zBuf, (u32)strlen(zBuf));
+  }
+  jsonAppendChar(&jx, ',');
+
+  jsonAppendString(&jx, "to", 2);
+  jsonAppendRaw(&jx, ":", 1);
+  {
+    char zBuf[128];
+    sqlite3_snprintf(sizeof(zBuf), zBuf, "%s.%llu", toBranch->name, toCommit);
+    jsonAppendString(&jx, zBuf, (u32)strlen(zBuf));
+  }
+  jsonAppendChar(&jx, ',');
+
+  jsonAppendString(&jx, "tables", 6);
+  jsonAppendRaw(&jx, ":{", 2);
+
+  if( nChangeset>0 && pChangeset ){
+    rc = sqlite3changeset_start(&pIter, nChangeset, pChangeset);
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+    while( sqlite3changeset_next(pIter)==SQLITE_ROW ){
+      const char *zTab = 0;
+      int nCol = 0, op = 0, bIndirect = 0;
+      int i;
+      unsigned char *abPK = 0;
+
+      rc = sqlite3changeset_op(pIter, &zTab, &nCol, &op, &bIndirect);
+      if( rc!=SQLITE_OK ) break;
+      if( !zTab ) continue;
+
+      /* switched to a new table? close the previous one, open a fresh block */
+      if( zLastTab==0 || sqlite3_stricmp(zLastTab, zTab)!=0 ){
+        if( inTableObj ){
+          if( curSection!=0 ) jsonAppendChar(&jx, ']');
+          jsonAppendChar(&jx, '}');
+          jsonAppendChar(&jx, ',');
+        }
+        inTableObj = 1;
+        curSection = 0;
+
+        jsonAppendString(&jx, zTab, (u32)strlen(zTab));
+        jsonAppendRaw(&jx, ":{", 2);
+
+        /* columns[] from the live "to" schema via PRAGMA table_info */
+        jsonAppendString(&jx, "columns", 7);
+        jsonAppendRaw(&jx, ":[", 2);
+        {
+          sqlite3_stmt *pInfo = 0;
+          char *zQ = sqlite3_mprintf("PRAGMA table_info(%Q)", zTab);
+          if( zQ ){
+            if( sqlite3_prepare(dbTo, zQ, -1, &pInfo, 0)==SQLITE_OK ){
+              int firstCol = 1;
+              while( sqlite3_step(pInfo)==SQLITE_ROW ){
+                const char *zName = (const char *)sqlite3_column_text(pInfo, 1);
+                if( !zName ) continue;
+                if( !firstCol ) jsonAppendChar(&jx, ',');
+                firstCol = 0;
+                jsonAppendString(&jx, zName, (u32)strlen(zName));
+              }
+              sqlite3_finalize(pInfo);
+            }
+            sqlite3_free(zQ);
+          }
+        }
+        jsonAppendRaw(&jx, "],", 2);
+
+        jsonAppendString(&jx, "pk", 2);
+        jsonAppendRaw(&jx, ":[", 2);
+        if( sqlite3changeset_pk(pIter, &abPK, 0)==SQLITE_OK && abPK ){
+          sqlite3_stmt *pInfo = 0;
+          char *zQ = sqlite3_mprintf("PRAGMA table_info(%Q)", zTab);
+          int iCol = 0, firstPk = 1;
+          if( zQ ){
+            if( sqlite3_prepare(dbTo, zQ, -1, &pInfo, 0)==SQLITE_OK ){
+              while( sqlite3_step(pInfo)==SQLITE_ROW ){
+                const char *zName = (const char *)sqlite3_column_text(pInfo, 1);
+                if( iCol<nCol && abPK[iCol] && zName ){
+                  if( !firstPk ) jsonAppendChar(&jx, ',');
+                  firstPk = 0;
+                  jsonAppendString(&jx, zName, (u32)strlen(zName));
+                }
+                iCol++;
+              }
+              sqlite3_finalize(pInfo);
+            }
+            sqlite3_free(zQ);
+          }
+        }
+        jsonAppendChar(&jx, ']');
+
+        zLastTab = zTab;
+      }
+
+      {
+        int want = (op==SQLITE_INSERT) ? 1
+                 : (op==SQLITE_UPDATE) ? 2
+                 : (op==SQLITE_DELETE) ? 3 : 0;
+        if( want==0 ) continue;
+        if( want!=curSection ){
+          if( curSection!=0 ) jsonAppendChar(&jx, ']');
+          jsonAppendChar(&jx, ',');
+          if( want==1 ) jsonAppendString(&jx, "inserts", 7);
+          else if( want==2 ) jsonAppendString(&jx, "updates", 7);
+          else jsonAppendString(&jx, "deletes", 7);
+          jsonAppendRaw(&jx, ":[", 2);
+          curSection = want;
+        } else {
+          jsonAppendChar(&jx, ',');
+        }
+      }
+
+      if( op==SQLITE_INSERT ){
+        jsonAppendChar(&jx, '[');
+        for(i=0; i<nCol; i++){
+          sqlite3_value *pVal = 0;
+          sqlite3changeset_new(pIter, i, &pVal);
+          if( i>0 ) jsonAppendChar(&jx, ',');
+          branchDiffAppendValue(&jx, pVal);
+        }
+        jsonAppendChar(&jx, ']');
+      } else if( op==SQLITE_DELETE ){
+        jsonAppendChar(&jx, '[');
+        for(i=0; i<nCol; i++){
+          sqlite3_value *pVal = 0;
+          sqlite3changeset_old(pIter, i, &pVal);
+          if( i>0 ) jsonAppendChar(&jx, ',');
+          branchDiffAppendValue(&jx, pVal);
+        }
+        jsonAppendChar(&jx, ']');
+      } else { /* UPDATE */
+        /* For an UPDATE, the session API only stores values for PK columns
+        ** and columns that actually changed. Unchanged non-PK columns come
+        ** back as a NULL sqlite3_value pointer. To give consumers complete
+        ** row images we fetch the full "old" row from from_db by PK, then
+        ** overlay the modified columns for the "new" side. */
+        sqlite3_stmt *pLookup = 0;
+        char *zSel;
+        int iPk;
+
+        /* build "SELECT * FROM from_db.<tab> WHERE pk1=? AND pk2=? ..." */
+        {
+          JsonString jSel;
+          jsonInit(&jSel, NULL);
+          jsonAppendRaw(&jSel, "SELECT * FROM from_db.\"", 23);
+          jsonAppendRaw(&jSel, zTab, (u32)strlen(zTab));
+          jsonAppendRaw(&jSel, "\" WHERE ", 8);
+          iPk = 0;
+          {
+            unsigned char *abPK2 = 0;
+            int nPkTot = 0;
+            sqlite3changeset_pk(pIter, &abPK2, &nPkTot);
+            {
+              sqlite3_stmt *pInfo = 0;
+              char *zQ = sqlite3_mprintf("PRAGMA table_info(%Q)", zTab);
+              int iCol = 0;
+              if( zQ ){
+                if( sqlite3_prepare(dbTo, zQ, -1, &pInfo, 0)==SQLITE_OK ){
+                  while( sqlite3_step(pInfo)==SQLITE_ROW ){
+                    const char *zName = (const char *)sqlite3_column_text(pInfo, 1);
+                    if( iCol<nCol && abPK2 && abPK2[iCol] && zName ){
+                      if( iPk>0 ) jsonAppendRaw(&jSel, " AND ", 5);
+                      jsonAppendChar(&jSel, '"');
+                      jsonAppendRaw(&jSel, zName, (u32)strlen(zName));
+                      jsonAppendRaw(&jSel, "\"=?", 3);
+                      iPk++;
+                    }
+                    iCol++;
+                  }
+                  sqlite3_finalize(pInfo);
+                }
+                sqlite3_free(zQ);
+              }
+            }
+          }
+          jsonAppendChar(&jSel, 0);
+          zSel = jSel.bStatic ? sqlite3_strdup(jSel.zBuf) : jSel.zBuf;
+          if( !jSel.bStatic ){ jSel.zBuf = 0; jSel.bStatic = 1; }
+        }
+
+        if( zSel ){
+          if( sqlite3_prepare(dbTo, zSel, -1, &pLookup, 0)==SQLITE_OK && pLookup ){
+            int bindIdx = 1;
+            int k;
+            for(k=0; k<nCol; k++){
+              unsigned char *abPK2 = 0;
+              sqlite3changeset_pk(pIter, &abPK2, 0);
+              if( abPK2 && abPK2[k] ){
+                sqlite3_value *pPk = 0;
+                sqlite3changeset_old(pIter, k, &pPk);
+                if( pPk ){
+                  sqlite3_bind_value(pLookup, bindIdx++, pPk);
+                } else {
+                  sqlite3_bind_null(pLookup, bindIdx++);
+                }
+              }
+            }
+          }
+          sqlite3_free(zSel);
+        }
+
+        {
+          int haveRow = 0;
+          if( pLookup && sqlite3_step(pLookup)==SQLITE_ROW ) haveRow = 1;
+
+          jsonAppendRaw(&jx, "{\"old\":[", 8);
+          for(i=0; i<nCol; i++){
+            if( i>0 ) jsonAppendChar(&jx, ',');
+            if( haveRow ){
+              sqlite3_value *pV = sqlite3_column_value(pLookup, i);
+              branchDiffAppendValue(&jx, pV);
+            } else {
+              sqlite3_value *pOld = 0;
+              sqlite3changeset_old(pIter, i, &pOld);
+              branchDiffAppendValue(&jx, pOld);
+            }
+          }
+          jsonAppendRaw(&jx, "],\"new\":[", 9);
+          for(i=0; i<nCol; i++){
+            sqlite3_value *pNew = 0;
+            sqlite3changeset_new(pIter, i, &pNew);
+            if( i>0 ) jsonAppendChar(&jx, ',');
+            if( pNew ){
+              /* column actually changed */
+              branchDiffAppendValue(&jx, pNew);
+            } else if( haveRow ){
+              /* unchanged column: take value from the old row */
+              branchDiffAppendValue(&jx, sqlite3_column_value(pLookup, i));
+            } else {
+              sqlite3_value *pOld = 0;
+              sqlite3changeset_old(pIter, i, &pOld);
+              branchDiffAppendValue(&jx, pOld);
+            }
+          }
+          jsonAppendRaw(&jx, "]}", 2);
+        }
+
+        if( pLookup ) sqlite3_finalize(pLookup);
+      }
+    }
+
+    rc = sqlite3changeset_finalize(pIter);
+    pIter = 0;
+    if( rc!=SQLITE_OK ) goto loc_cleanup;
+
+    if( inTableObj ){
+      if( curSection!=0 ) jsonAppendChar(&jx, ']');
+      jsonAppendChar(&jx, '}');
+      inTableObj = 0;
+    }
+  }
+
+  jsonAppendChar(&jx, '}');   /* close "tables" */
+  jsonAppendChar(&jx, '}');   /* close top-level */
+  jsonAppendChar(&jx, 0);     /* null terminator */
+
+  if( jx.bStatic ){
+    *pzResult = sqlite3_strdup(jx.zBuf);
+    if( !*pzResult ){ rc = SQLITE_NOMEM; goto loc_cleanup; }
+  } else {
+    *pzResult = jx.zBuf;       /* transfer ownership */
+    jx.zBuf = 0;
+    jx.bStatic = 1;
+  }
+  rc = SQLITE_OK;
+
+loc_cleanup:
+  if( pIter ) sqlite3changeset_finalize(pIter);
+  if( pSession ) sqlite3session_delete(pSession);
+  if( dbTo ){
+    sqlite3_exec(dbTo, "DETACH from_db", 0, 0, 0);
+    sqlite3_close(dbTo);
+  }
+  if( dbFrom ) sqlite3_close(dbFrom);
+  if( zUri ) sqlite3_free(zUri);
+  if( pChangeset ) sqlite3_free(pChangeset);
+  if( zErr ) sqlite3_free(zErr);
+  if( bJsonInit && !jx.bStatic ) sqlite3_free(jx.zBuf);
+  return rc;
+}
+
 
 /*****************************************************************************/
 
