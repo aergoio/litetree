@@ -3467,9 +3467,24 @@ class TestSQLiteBranches(unittest.TestCase):
         raw = c.fetchone()[0]
         d = json.loads(raw)
 
-        # t1 -> schema differs (column added) => schema_mismatch
+        # t1 -> schema differs (column added) => schema_mismatch carries a
+        # schema_diff describing the added column plus a union-column
+        # row-level diff (unchanged rows are omitted).
         self.assertIn("t1", d["tables"])
-        self.assertEqual(d["tables"]["t1"], {"schema_mismatch": True})
+        t1 = d["tables"]["t1"]
+        self.assertTrue(t1.get("schema_mismatch"))
+        sd = t1["schema_diff"]
+        self.assertEqual([a["name"] for a in sd["added"]], ["extra"])
+        self.assertEqual(sd["removed"], [])
+        self.assertEqual(sd["modified"], [])
+        self.assertEqual(t1["columns"], ["id", "name", "extra"])
+        self.assertEqual(t1["pk"], ["id"])
+        # no inserts/deletes; id=1 gained extra='x', others unchanged
+        self.assertEqual(t1["inserts"], [])
+        self.assertEqual(t1["deletes"], [])
+        self.assertEqual(t1["updates"], [
+            {"old": [1, "alice", None], "new": [1, "alice", "x"]},
+        ])
 
         # t2 -> matching schema, normal DML diff
         t2 = d["tables"]["t2"]
@@ -3497,6 +3512,66 @@ class TestSQLiteBranches(unittest.TestCase):
         self.assertEqual(td["columns"], ["id", "payload"])
         self.assertEqual(td["pk"], ["id"])
         self.assertEqual(td["deletes"], [[7, "gone"], [8, "bye"]])
+
+        conn.close()
+
+        # 8. Schema mismatch with a column removed AND a column type changed:
+        # union column list is "from-first, then to-only"; rows are reported
+        # with phantom positions rendered as null on the side that lacks the
+        # column. Type-only changes show up in schema_diff.modified.
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute(
+            "CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT, "
+            "value INTEGER, old_col TEXT)"
+        )
+        c.execute("INSERT INTO t1 VALUES (1,'alice',10,'legacy')")
+        c.execute("INSERT INTO t1 VALUES (2,'bob',20,NULL)")
+        c.execute("INSERT INTO t1 VALUES (3,'charlie',30,NULL)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=dev at master")
+        # rebuild t1 with a different declared type and a new "extra" column,
+        # dropping "old_col"
+        c.execute("ALTER TABLE t1 RENAME TO t1_old")
+        c.execute(
+            "CREATE TABLE t1(id INTEGER PRIMARY KEY, name TEXT, "
+            "value TEXT, extra TEXT)"
+        )
+        c.execute("INSERT INTO t1 SELECT id, name, CAST(value AS TEXT), NULL FROM t1_old")
+        c.execute("DROP TABLE t1_old")
+        c.execute("DELETE FROM t1 WHERE id=3")
+        c.execute("INSERT INTO t1 VALUES (4,'dave','40',NULL)")
+        c.execute("UPDATE t1 SET extra='x' WHERE id=1")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("PRAGMA branch_diff master dev")
+        d8 = json.loads(c.fetchone()[0])
+        t1 = d8["tables"]["t1"]
+        self.assertTrue(t1.get("schema_mismatch"))
+        sd = t1["schema_diff"]
+        self.assertEqual([a["name"] for a in sd["added"]],   ["extra"])
+        self.assertEqual([r["name"] for r in sd["removed"]], ["old_col"])
+        self.assertEqual([m["name"] for m in sd["modified"]], ["value"])
+        # modified entry carries only changed attributes (type here)
+        self.assertEqual(
+            sd["modified"][0]["type"],
+            {"from": "INTEGER", "to": "TEXT"},
+        )
+        # union columns: from-order first (id,name,value,old_col), then
+        # to-only (extra)
+        self.assertEqual(t1["columns"],
+                         ["id", "name", "value", "old_col", "extra"])
+        self.assertEqual(t1["inserts"], [[4, "dave", "40", None, None]])
+        self.assertEqual(t1["deletes"], [[3, "charlie", 30, None, None]])
+        updates = {u["old"][0]: u for u in t1["updates"]}
+        self.assertIn(1, updates)
+        self.assertEqual(updates[1]["old"], [1, "alice", 10, "legacy", None])
+        self.assertEqual(updates[1]["new"], [1, "alice", "10", None, "x"])
 
         conn.close()
 

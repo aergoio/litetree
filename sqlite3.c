@@ -228743,6 +228743,159 @@ static void branchDiffAppendValue(JsonString *p, sqlite3_value *pVal){
 }
 
 /*
+** Per-column metadata pulled from PRAGMA table_info for the schema-diff path.
+*/
+typedef struct BdCol BdCol;
+struct BdCol {
+  char *zName;     /* column name (owned)                                */
+  char *zType;     /* declared type (owned, may be NULL)                 */
+  int   notnull;
+  char *zDflt;     /* default expression (owned, may be NULL)            */
+  int   pk;        /* 0 if not PK; otherwise 1-based position in PK tuple */
+};
+
+static void branchDiffFreeCols(BdCol *aCol, int nCol){
+  int i;
+  if( !aCol ) return;
+  for(i=0; i<nCol; i++){
+    sqlite3_free(aCol[i].zName);
+    sqlite3_free(aCol[i].zType);
+    sqlite3_free(aCol[i].zDflt);
+  }
+  sqlite3_free(aCol);
+}
+
+/*
+** Run PRAGMA {zSchema}.table_info({zTab}) and materialise the result. On
+** success writes *paCol / *pnCol (caller owns via branchDiffFreeCols).
+*/
+static int branchDiffLoadTableInfo(
+  sqlite3 *db, const char *zSchema, const char *zTab,
+  BdCol **paCol, int *pnCol
+){
+  sqlite3_stmt *pStmt = 0;
+  char *zQ;
+  BdCol *aCol = 0;
+  int nCol = 0, nAlloc = 0;
+  int rc;
+
+  *paCol = 0;
+  *pnCol = 0;
+  zQ = sqlite3_mprintf("PRAGMA %s.table_info(%Q)", zSchema, zTab);
+  if( !zQ ) return SQLITE_NOMEM;
+  rc = sqlite3_prepare(db, zQ, -1, &pStmt, 0);
+  sqlite3_free(zQ);
+  if( rc!=SQLITE_OK ) return rc;
+
+  while( sqlite3_step(pStmt)==SQLITE_ROW ){
+    const char *zName = (const char*)sqlite3_column_text(pStmt, 1);
+    const char *zType = (const char*)sqlite3_column_text(pStmt, 2);
+    int         nn    =              sqlite3_column_int (pStmt, 3);
+    const char *zDflt = (const char*)sqlite3_column_text(pStmt, 4);
+    int         pk    =              sqlite3_column_int (pStmt, 5);
+    if( !zName ) continue;
+    if( nCol==nAlloc ){
+      int nNew = nAlloc ? nAlloc*2 : 8;
+      BdCol *aNew = sqlite3_realloc(aCol, sizeof(BdCol)*nNew);
+      if( !aNew ){ rc = SQLITE_NOMEM; goto fail; }
+      aCol = aNew;
+      nAlloc = nNew;
+    }
+    memset(&aCol[nCol], 0, sizeof(BdCol));
+    aCol[nCol].zName = sqlite3_mprintf("%s", zName);
+    aCol[nCol].zType = zType ? sqlite3_mprintf("%s", zType) : 0;
+    aCol[nCol].notnull = nn;
+    aCol[nCol].zDflt = zDflt ? sqlite3_mprintf("%s", zDflt) : 0;
+    aCol[nCol].pk = pk;
+    if( !aCol[nCol].zName
+     || (zType && !aCol[nCol].zType)
+     || (zDflt && !aCol[nCol].zDflt) ){
+      rc = SQLITE_NOMEM;
+      goto fail;
+    }
+    nCol++;
+  }
+  sqlite3_finalize(pStmt);
+  *paCol = aCol;
+  *pnCol = nCol;
+  return SQLITE_OK;
+
+fail:
+  sqlite3_finalize(pStmt);
+  branchDiffFreeCols(aCol, nCol);
+  return rc;
+}
+
+/*
+** Find a column by name in aCol[]. Returns the index, or -1 if not found.
+*/
+static int branchDiffFindCol(BdCol *aCol, int nCol, const char *zName){
+  int i;
+  for(i=0; i<nCol; i++){
+    if( sqlite3_stricmp(aCol[i].zName, zName)==0 ) return i;
+  }
+  return -1;
+}
+
+/*
+** Compare two sqlite3_value instances for equality (used to decide whether
+** a joined row counts as an UPDATE). NULL pointer is treated as SQL NULL.
+*/
+static int branchDiffValueEqual(sqlite3_value *a, sqlite3_value *b){
+  int ta = a ? sqlite3_value_type(a) : SQLITE_NULL;
+  int tb = b ? sqlite3_value_type(b) : SQLITE_NULL;
+  if( ta!=tb ) return 0;
+  switch( ta ){
+    case SQLITE_NULL:
+      return 1;
+    case SQLITE_INTEGER:
+      return sqlite3_value_int64(a) == sqlite3_value_int64(b);
+    case SQLITE_FLOAT:
+      return sqlite3_value_double(a) == sqlite3_value_double(b);
+    case SQLITE_TEXT: {
+      int na = sqlite3_value_bytes(a);
+      int nb = sqlite3_value_bytes(b);
+      const unsigned char *pa, *pb;
+      if( na!=nb ) return 0;
+      pa = sqlite3_value_text(a);
+      pb = sqlite3_value_text(b);
+      return memcmp(pa, pb, na)==0;
+    }
+    case SQLITE_BLOB: {
+      int na = sqlite3_value_bytes(a);
+      int nb = sqlite3_value_bytes(b);
+      const void *pa, *pb;
+      if( na!=nb ) return 0;
+      pa = sqlite3_value_blob(a);
+      pb = sqlite3_value_blob(b);
+      return memcmp(pa, pb, na)==0;
+    }
+  }
+  return 0;
+}
+
+/*
+** Emit a JSON array aligned with a union column list. For each union column
+** index i, aMap[i] gives the position in pStmt to read from (or -1 to
+** render JSON null, meaning the column does not exist on this side).
+*/
+static void branchDiffEmitUnionRow(
+  JsonString *p, sqlite3_stmt *pStmt, int *aMap, int nUnion
+){
+  int i;
+  jsonAppendChar(p, '[');
+  for(i=0; i<nUnion; i++){
+    if( i>0 ) jsonAppendChar(p, ',');
+    if( !pStmt || aMap[i]<0 ){
+      jsonAppendRaw(p, "null", 4);
+    } else {
+      branchDiffAppendValue(p, sqlite3_column_value(pStmt, aMap[i]));
+    }
+  }
+  jsonAppendChar(p, ']');
+}
+
+/*
 ** Resolve a "{branch}[.{commit}]" point spec. Splits zPoint into branch name
 ** and an optional commit number (0 means "tip"). Returns SQLITE_NOTFOUND if
 ** the branch does not exist, SQLITE_MISUSE for an invalid commit value.
@@ -229247,7 +229400,427 @@ SQLITE_PRIVATE int pragma_branch_diff(
       jsonAppendRaw(&jx, ":{", 2);
 
       if( kind==BD_MISMATCH ){
-        jsonAppendRaw(&jx, "\"schema_mismatch\":true}", 23);
+        BdCol *aFrom = 0, *aTo = 0;
+        int nFrom = 0, nTo = 0;
+        /* union column list: from's order first, then to-only cols appended */
+        int nUnion = 0;
+        int *aUnionFrom = 0; /* -1 or index into aFrom   */
+        int *aUnionTo   = 0; /* -1 or index into aTo     */
+        int *aMapFrom   = 0; /* union i -> stmt position on from side, or -1 */
+        int *aMapTo     = 0; /* union i -> stmt position on to   side, or -1 */
+
+        rc = branchDiffLoadTableInfo(dbTo, "main",    zName, &aTo,   &nTo);
+        if( rc==SQLITE_OK ){
+          rc = branchDiffLoadTableInfo(dbTo, "from_db", zName, &aFrom, &nFrom);
+        }
+        if( rc!=SQLITE_OK ){
+          branchDiffFreeCols(aTo, nTo);
+          branchDiffFreeCols(aFrom, nFrom);
+          goto loc_cleanup;
+        }
+
+        nUnion = nFrom + nTo;   /* upper bound */
+        aUnionFrom = sqlite3_malloc(sizeof(int)*nUnion);
+        aUnionTo   = sqlite3_malloc(sizeof(int)*nUnion);
+        aMapFrom   = sqlite3_malloc(sizeof(int)*nUnion);
+        aMapTo     = sqlite3_malloc(sizeof(int)*nUnion);
+        if( !aUnionFrom || !aUnionTo || !aMapFrom || !aMapTo ){
+          sqlite3_free(aUnionFrom); sqlite3_free(aUnionTo);
+          sqlite3_free(aMapFrom);   sqlite3_free(aMapTo);
+          branchDiffFreeCols(aTo, nTo);
+          branchDiffFreeCols(aFrom, nFrom);
+          rc = SQLITE_NOMEM;
+          goto loc_cleanup;
+        }
+        {
+          int iUnion = 0, j;
+          /* all from-side columns in their declared order */
+          for(j=0; j<nFrom; j++){
+            aUnionFrom[iUnion] = j;
+            aUnionTo  [iUnion] = branchDiffFindCol(aTo,   nTo,   aFrom[j].zName);
+            iUnion++;
+          }
+          /* to-only columns appended in to's order */
+          for(j=0; j<nTo; j++){
+            if( branchDiffFindCol(aFrom, nFrom, aTo[j].zName)>=0 ) continue;
+            aUnionFrom[iUnion] = -1;
+            aUnionTo  [iUnion] = j;
+            iUnion++;
+          }
+          nUnion = iUnion;
+        }
+
+        jsonAppendRaw(&jx, "\"schema_mismatch\":true,", 23);
+
+        /* ---- schema_diff object -------------------------------------- */
+        jsonAppendString(&jx, "schema_diff", 11);
+        jsonAppendRaw(&jx, ":{", 2);
+        {
+          int j, first;
+
+          /* added: columns only on "to" */
+          jsonAppendString(&jx, "added", 5);
+          jsonAppendRaw(&jx, ":[", 2);
+          first = 1;
+          for(j=0; j<nTo; j++){
+            if( branchDiffFindCol(aFrom, nFrom, aTo[j].zName)>=0 ) continue;
+            if( !first ) jsonAppendChar(&jx, ',');
+            first = 0;
+            jsonAppendRaw(&jx, "{", 1);
+            jsonAppendString(&jx, "name", 4);
+            jsonAppendChar(&jx, ':');
+            jsonAppendString(&jx, aTo[j].zName, (u32)strlen(aTo[j].zName));
+            if( aTo[j].zType && aTo[j].zType[0] ){
+              jsonAppendChar(&jx, ',');
+              jsonAppendString(&jx, "type", 4);
+              jsonAppendChar(&jx, ':');
+              jsonAppendString(&jx, aTo[j].zType, (u32)strlen(aTo[j].zType));
+            }
+            jsonAppendRaw(&jx, "}", 1);
+          }
+          jsonAppendRaw(&jx, "],", 2);
+
+          /* removed: columns only on "from" */
+          jsonAppendString(&jx, "removed", 7);
+          jsonAppendRaw(&jx, ":[", 2);
+          first = 1;
+          for(j=0; j<nFrom; j++){
+            if( branchDiffFindCol(aTo, nTo, aFrom[j].zName)>=0 ) continue;
+            if( !first ) jsonAppendChar(&jx, ',');
+            first = 0;
+            jsonAppendRaw(&jx, "{", 1);
+            jsonAppendString(&jx, "name", 4);
+            jsonAppendChar(&jx, ':');
+            jsonAppendString(&jx, aFrom[j].zName, (u32)strlen(aFrom[j].zName));
+            if( aFrom[j].zType && aFrom[j].zType[0] ){
+              jsonAppendChar(&jx, ',');
+              jsonAppendString(&jx, "type", 4);
+              jsonAppendChar(&jx, ':');
+              jsonAppendString(&jx, aFrom[j].zType, (u32)strlen(aFrom[j].zType));
+            }
+            jsonAppendRaw(&jx, "}", 1);
+          }
+          jsonAppendRaw(&jx, "],", 2);
+
+          /* modified: same name, different attribute(s). Only the changed
+          ** attributes are reported (type/notnull/dflt_value/pk). */
+          jsonAppendString(&jx, "modified", 8);
+          jsonAppendRaw(&jx, ":[", 2);
+          first = 1;
+          for(j=0; j<nFrom; j++){
+            int k = branchDiffFindCol(aTo, nTo, aFrom[j].zName);
+            int dType, dNull, dDflt, dPk;
+            if( k<0 ) continue;
+            dType = sqlite3_stricmp(aFrom[j].zType?aFrom[j].zType:"",
+                                    aTo  [k].zType?aTo  [k].zType:"")!=0;
+            dNull = aFrom[j].notnull != aTo[k].notnull;
+            dDflt = (aFrom[j].zDflt==0) != (aTo[k].zDflt==0)
+                 || (aFrom[j].zDflt && aTo[k].zDflt
+                 && strcmp(aFrom[j].zDflt, aTo[k].zDflt)!=0);
+            dPk   = (aFrom[j].pk!=0) != (aTo[k].pk!=0);
+            if( !dType && !dNull && !dDflt && !dPk ) continue;
+
+            if( !first ) jsonAppendChar(&jx, ',');
+            first = 0;
+            jsonAppendRaw(&jx, "{", 1);
+            jsonAppendString(&jx, "name", 4);
+            jsonAppendChar(&jx, ':');
+            jsonAppendString(&jx, aFrom[j].zName, (u32)strlen(aFrom[j].zName));
+
+            if( dType ){
+              jsonAppendRaw(&jx, ",\"type\":{", 9);
+              jsonAppendString(&jx, "from", 4);
+              jsonAppendChar(&jx, ':');
+              jsonAppendString(&jx, aFrom[j].zType?aFrom[j].zType:"",
+                  aFrom[j].zType?(u32)strlen(aFrom[j].zType):0);
+              jsonAppendChar(&jx, ',');
+              jsonAppendString(&jx, "to", 2);
+              jsonAppendChar(&jx, ':');
+              jsonAppendString(&jx, aTo[k].zType?aTo[k].zType:"",
+                  aTo[k].zType?(u32)strlen(aTo[k].zType):0);
+              jsonAppendChar(&jx, '}');
+            }
+            if( dNull ){
+              char zBuf[64];
+              sqlite3_snprintf(sizeof(zBuf), zBuf,
+                  ",\"notnull\":{\"from\":%d,\"to\":%d}",
+                  aFrom[j].notnull, aTo[k].notnull);
+              jsonAppendRaw(&jx, zBuf, (u32)strlen(zBuf));
+            }
+            if( dDflt ){
+              jsonAppendRaw(&jx, ",\"dflt_value\":{", 15);
+              jsonAppendString(&jx, "from", 4);
+              jsonAppendChar(&jx, ':');
+              if( aFrom[j].zDflt ){
+                jsonAppendString(&jx, aFrom[j].zDflt, (u32)strlen(aFrom[j].zDflt));
+              } else {
+                jsonAppendRaw(&jx, "null", 4);
+              }
+              jsonAppendChar(&jx, ',');
+              jsonAppendString(&jx, "to", 2);
+              jsonAppendChar(&jx, ':');
+              if( aTo[k].zDflt ){
+                jsonAppendString(&jx, aTo[k].zDflt, (u32)strlen(aTo[k].zDflt));
+              } else {
+                jsonAppendRaw(&jx, "null", 4);
+              }
+              jsonAppendChar(&jx, '}');
+            }
+            if( dPk ){
+              char zBuf[64];
+              sqlite3_snprintf(sizeof(zBuf), zBuf,
+                  ",\"pk\":{\"from\":%s,\"to\":%s}",
+                  aFrom[j].pk ? "true":"false",
+                  aTo[k].pk   ? "true":"false");
+              jsonAppendRaw(&jx, zBuf, (u32)strlen(zBuf));
+            }
+            jsonAppendRaw(&jx, "}", 1);
+          }
+          jsonAppendRaw(&jx, "]", 1);
+        }
+        jsonAppendRaw(&jx, "},", 2);
+
+        /* ---- columns[] (union), pk[] (to side) ----------------------- */
+        jsonAppendString(&jx, "columns", 7);
+        jsonAppendRaw(&jx, ":[", 2);
+        {
+          int iu;
+          for(iu=0; iu<nUnion; iu++){
+            const char *zN = (aUnionFrom[iu]>=0)
+                ? aFrom[aUnionFrom[iu]].zName
+                : aTo  [aUnionTo  [iu]].zName;
+            if( iu>0 ) jsonAppendChar(&jx, ',');
+            jsonAppendString(&jx, zN, (u32)strlen(zN));
+          }
+        }
+        jsonAppendRaw(&jx, "],", 2);
+
+        jsonAppendString(&jx, "pk", 2);
+        jsonAppendRaw(&jx, ":[", 2);
+        {
+          int jj, first = 1;
+          /* emit PK from "to" side, in PK order */
+          int maxPk = 0;
+          for(jj=0; jj<nTo; jj++){
+            if( aTo[jj].pk > maxPk ) maxPk = aTo[jj].pk;
+          }
+          {
+            int p;
+            for(p=1; p<=maxPk; p++){
+              for(jj=0; jj<nTo; jj++){
+                if( aTo[jj].pk==p ){
+                  if( !first ) jsonAppendChar(&jx, ',');
+                  first = 0;
+                  jsonAppendString(&jx, aTo[jj].zName, (u32)strlen(aTo[jj].zName));
+                  break;
+                }
+              }
+            }
+          }
+        }
+        jsonAppendRaw(&jx, "]", 1);
+
+        /* ---- row-level diff on union columns -------------------------
+        ** Only attempted when both sides declare the same PK (same column
+        ** names in the same positions). Otherwise row-level data is omitted
+        ** and only schema_diff + columns/pk are emitted. */
+        {
+          int sameKey = 1;
+          int nPkFrom = 0, nPkTo = 0;
+          int jj;
+          for(jj=0; jj<nFrom; jj++) if( aFrom[jj].pk ) nPkFrom++;
+          for(jj=0; jj<nTo;   jj++) if( aTo  [jj].pk ) nPkTo++;
+          if( nPkFrom==0 || nPkFrom!=nPkTo ){
+            sameKey = 0;
+          } else {
+            int p;
+            for(p=1; p<=nPkFrom && sameKey; p++){
+              const char *zF=0, *zT=0;
+              for(jj=0; jj<nFrom; jj++) if(aFrom[jj].pk==p){ zF=aFrom[jj].zName; break; }
+              for(jj=0; jj<nTo;   jj++) if(aTo  [jj].pk==p){ zT=aTo  [jj].zName; break; }
+              if( !zF || !zT || sqlite3_stricmp(zF, zT)!=0 ) sameKey = 0;
+            }
+          }
+
+          if( sameKey ){
+            /* build aMapTo / aMapFrom so stmt position N corresponds to
+            ** union column index i:  we SELECT columns in table_info order
+            ** for each side. */
+            int iu;
+            for(iu=0; iu<nUnion; iu++){
+              aMapFrom[iu] = aUnionFrom[iu];   /* same index in PRAGMA order */
+              aMapTo  [iu] = aUnionTo  [iu];
+            }
+
+            /* build PK-match condition: f.pk1=t.pk1 AND f.pk2=t.pk2 ... */
+            char *zOn = 0;
+            {
+              int p;
+              for(p=1; p<=nPkFrom; p++){
+                const char *zPk = 0;
+                for(jj=0; jj<nFrom; jj++) if(aFrom[jj].pk==p){ zPk=aFrom[jj].zName; break; }
+                {
+                  char *zNew = sqlite3_mprintf("%s%s\"%w\".\"%w\"=\"%w\".\"%w\"",
+                      zOn?zOn:"", zOn?" AND ":"",
+                      "f", zPk, "t", zPk);
+                  sqlite3_free(zOn);
+                  zOn = zNew;
+                  if( !zOn ){ rc = SQLITE_NOMEM; break; }
+                }
+              }
+            }
+            if( rc!=SQLITE_OK ){
+              sqlite3_free(zOn);
+              branchDiffFreeCols(aTo, nTo);
+              branchDiffFreeCols(aFrom, nFrom);
+              sqlite3_free(aUnionFrom); sqlite3_free(aUnionTo);
+              sqlite3_free(aMapFrom);   sqlite3_free(aMapTo);
+              goto loc_cleanup;
+            }
+
+            /* inserts: rows on "to" with no PK match on "from" */
+            jsonAppendRaw(&jx, ",", 1);
+            jsonAppendString(&jx, "inserts", 7);
+            jsonAppendRaw(&jx, ":[", 2);
+            {
+              sqlite3_stmt *pS = 0;
+              char *zSql = sqlite3_mprintf(
+                  "SELECT t.* FROM main.\"%w\" t "
+                  "WHERE NOT EXISTS ("
+                    "SELECT 1 FROM from_db.\"%w\" f WHERE %s)",
+                  zName, zName, zOn);
+              if( zSql && sqlite3_prepare(dbTo, zSql, -1, &pS, 0)==SQLITE_OK ){
+                int firstR = 1;
+                while( sqlite3_step(pS)==SQLITE_ROW ){
+                  if( !firstR ) jsonAppendChar(&jx, ',');
+                  firstR = 0;
+                  branchDiffEmitUnionRow(&jx, pS, aMapTo, nUnion);
+                }
+                sqlite3_finalize(pS);
+              }
+              sqlite3_free(zSql);
+            }
+            jsonAppendRaw(&jx, "],", 2);
+
+            /* deletes: rows on "from" with no PK match on "to" */
+            jsonAppendString(&jx, "deletes", 7);
+            jsonAppendRaw(&jx, ":[", 2);
+            {
+              sqlite3_stmt *pS = 0;
+              char *zSql = sqlite3_mprintf(
+                  "SELECT f.* FROM from_db.\"%w\" f "
+                  "WHERE NOT EXISTS ("
+                    "SELECT 1 FROM main.\"%w\" t WHERE %s)",
+                  zName, zName, zOn);
+              if( zSql && sqlite3_prepare(dbTo, zSql, -1, &pS, 0)==SQLITE_OK ){
+                int firstR = 1;
+                while( sqlite3_step(pS)==SQLITE_ROW ){
+                  if( !firstR ) jsonAppendChar(&jx, ',');
+                  firstR = 0;
+                  branchDiffEmitUnionRow(&jx, pS, aMapFrom, nUnion);
+                }
+                sqlite3_finalize(pS);
+              }
+              sqlite3_free(zSql);
+            }
+            jsonAppendRaw(&jx, "],", 2);
+
+            /* updates: rows with matching PK on both sides where at least one
+            ** union column differs (phantom positions count as null). Select
+            ** the union as (to side cols) || (from side cols) in a single
+            ** joined statement; aMapTo indexes the first nTo cols, aMapFrom
+            ** indexes the remaining nFrom cols. */
+            jsonAppendString(&jx, "updates", 7);
+            jsonAppendRaw(&jx, ":[", 2);
+            {
+              sqlite3_stmt *pS = 0;
+              /* column list: all of t.*, then all of f.* */
+              char *zSelT = 0, *zSelF = 0;
+              int iu;
+              int *aMapToJ   = sqlite3_malloc(sizeof(int)*nUnion);
+              int *aMapFromJ = sqlite3_malloc(sizeof(int)*nUnion);
+              if( !aMapToJ || !aMapFromJ ){
+                sqlite3_free(aMapToJ);
+                sqlite3_free(aMapFromJ);
+                rc = SQLITE_NOMEM;
+                sqlite3_free(zOn);
+                branchDiffFreeCols(aTo, nTo);
+                branchDiffFreeCols(aFrom, nFrom);
+                sqlite3_free(aUnionFrom); sqlite3_free(aUnionTo);
+                sqlite3_free(aMapFrom);   sqlite3_free(aMapTo);
+                goto loc_cleanup;
+              }
+              for(iu=0; iu<nUnion; iu++){
+                aMapToJ  [iu] = (aUnionTo  [iu]<0) ? -1 : aUnionTo  [iu];
+                aMapFromJ[iu] = (aUnionFrom[iu]<0) ? -1
+                              : nTo + aUnionFrom[iu];
+              }
+              /* build "t.\"c1\",t.\"c2\",... ,f.\"c1\",..." */
+              {
+                int j;
+                for(j=0; j<nTo; j++){
+                  char *zNew = sqlite3_mprintf("%s%st.\"%w\"",
+                      zSelT?zSelT:"", zSelT?",":"", aTo[j].zName);
+                  sqlite3_free(zSelT); zSelT = zNew;
+                  if( !zSelT ){ rc = SQLITE_NOMEM; break; }
+                }
+                for(j=0; j<nFrom && rc==SQLITE_OK; j++){
+                  char *zNew = sqlite3_mprintf("%s%sf.\"%w\"",
+                      zSelF?zSelF:"", zSelF?",":"", aFrom[j].zName);
+                  sqlite3_free(zSelF); zSelF = zNew;
+                  if( !zSelF ){ rc = SQLITE_NOMEM; break; }
+                }
+              }
+              if( rc==SQLITE_OK ){
+                char *zSql = sqlite3_mprintf(
+                    "SELECT %s,%s FROM main.\"%w\" t "
+                    "JOIN from_db.\"%w\" f ON %s",
+                    zSelT?zSelT:"NULL", zSelF?zSelF:"NULL",
+                    zName, zName, zOn);
+                if( zSql && sqlite3_prepare(dbTo, zSql, -1, &pS, 0)==SQLITE_OK ){
+                  int firstR = 1;
+                  while( sqlite3_step(pS)==SQLITE_ROW ){
+                    /* is this actually an update? any differing union column. */
+                    int differs = 0;
+                    for(iu=0; iu<nUnion && !differs; iu++){
+                      sqlite3_value *vT = (aMapToJ  [iu]>=0)
+                          ? sqlite3_column_value(pS, aMapToJ[iu])   : 0;
+                      sqlite3_value *vF = (aMapFromJ[iu]>=0)
+                          ? sqlite3_column_value(pS, aMapFromJ[iu]) : 0;
+                      if( !branchDiffValueEqual(vT, vF) ) differs = 1;
+                    }
+                    if( !differs ) continue;
+
+                    if( !firstR ) jsonAppendChar(&jx, ',');
+                    firstR = 0;
+                    jsonAppendRaw(&jx, "{\"old\":", 7);
+                    branchDiffEmitUnionRow(&jx, pS, aMapFromJ, nUnion);
+                    jsonAppendRaw(&jx, ",\"new\":", 7);
+                    branchDiffEmitUnionRow(&jx, pS, aMapToJ,   nUnion);
+                    jsonAppendChar(&jx, '}');
+                  }
+                  sqlite3_finalize(pS);
+                }
+                sqlite3_free(zSql);
+              }
+              sqlite3_free(zSelT);
+              sqlite3_free(zSelF);
+              sqlite3_free(aMapToJ);
+              sqlite3_free(aMapFromJ);
+            }
+            jsonAppendRaw(&jx, "]", 1);
+
+            sqlite3_free(zOn);
+          }
+        }
+
+        jsonAppendChar(&jx, '}');
+
+        branchDiffFreeCols(aTo, nTo);
+        branchDiffFreeCols(aFrom, nFrom);
+        sqlite3_free(aUnionFrom); sqlite3_free(aUnionTo);
+        sqlite3_free(aMapFrom);   sqlite3_free(aMapTo);
+        if( rc!=SQLITE_OK ) goto loc_cleanup;
         continue;
       }
 

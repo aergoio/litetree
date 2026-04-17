@@ -189,22 +189,47 @@ It is also possible to truncate a branch at a specific commit, rename a branch, 
 	- A table that exists only on the `from` side gets `"dropped": true`
 	  alongside its `columns`, `pk`, and every row as `deletes`.
 	- A table that exists on both sides but with a different `CREATE`
-	  statement is reported with `"schema_mismatch": true` only (no
-	  row-level diff, since the columns don't align).
+	  statement is reported with `"schema_mismatch": true` together
+	  with a `schema_diff` object describing the column-level changes.
+	  The normal `columns` / `pk` / `inserts` / `deletes` / `updates`
+	  fields are still emitted: `columns` is the union of both sides
+	  (from-side order first, then any to-only columns appended), and
+	  every row array renders `null` at positions the side doesn't
+	  have. Row-level diff is computed only when the PK columns are
+	  identical on both sides.
 
-	Example:
+	`schema_diff` has three lists:
+
+	- `added`: columns only on the `to` side, each `{"name":..., "type":...}`
+	- `removed`: columns only on the `from` side, same shape
+	- `modified`: same column name on both sides with a different type,
+	  `notnull`, `dflt_value`, or primary-key flag. Only the attributes
+	  that actually changed are reported, each as `{"from":..., "to":...}`.
+
+	Example (column added, column removed, column type changed):
 	```json
-	"tables": {
-	  "t1":  { "schema_mismatch": true },
-	  "t2":  { "columns": ["id","val"], "pk": ["id"], "inserts": [[2,20]] },
-	  "new": { "created": true,  "columns": ["id","lbl"], "pk": ["id"],
-	           "inserts": [[1,"a"],[2,"b"]] },
-	  "old": { "dropped": true,  "columns": ["id","payload"], "pk": ["id"],
-	           "deletes": [[7,"gone"]] }
+	"t1": {
+	  "schema_mismatch": true,
+	  "schema_diff": {
+	    "added":    [{"name": "extra",   "type": "TEXT"}],
+	    "removed":  [{"name": "old_col", "type": "TEXT"}],
+	    "modified": [{"name": "value",
+	                  "type": {"from": "INTEGER", "to": "TEXT"}}]
+	  },
+	  "columns": ["id", "name", "value", "old_col", "extra"],
+	  "pk":      ["id"],
+	  "inserts": [[4, "dave", "40", null, null]],
+	  "deletes": [[3, "charlie", 30, null, null]],
+	  "updates": [
+	    {"old": [1, "alice", 10,  "legacy", null],
+	     "new": [1, "alice", "10", null,   "x"]}
+	  ]
 	}
 	```
-	DDL-level diff (reporting the actual column/constraint changes for
-	`schema_mismatch` tables) is a future extension.
+
+	Renames of tables or columns are not detected — a rename shows up
+	as a `dropped` + `created` pair (for a table rename) or as
+	`removed` + `added` inside `schema_diff` (for a column rename).
 
 #### Not yet available
 
