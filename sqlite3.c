@@ -229357,7 +229357,7 @@ SQLITE_PRIVATE int pragma_branch_diff(
   int rc;
   JsonString jx;
   int bJsonInit = 0;
-  const char *zLastTab = 0;
+  char *zLastTab = 0;    /* owned copy; zTab from changeset_op is transient */
   int inTableObj = 0;
   int curSection = 0;    /* 0=none, 1=inserts, 2=updates, 3=deletes */
   /* Tables reported outside the normal changeset path.
@@ -229532,7 +229532,11 @@ SQLITE_PRIVATE int pragma_branch_diff(
       if( rc!=SQLITE_OK ) break;
       if( !zTab ) continue;
 
-      /* switched to a new table? close the previous one, open a fresh block */
+      /* switched to a new table? close the previous one, open a fresh block.
+      ** Note: zTab returned by sqlite3changeset_op() points into the changeset
+      ** buffer and is only valid until the next sqlite3changeset_next() call,
+      ** so we keep an owned copy in zLastTab for the comparison to stay valid
+      ** across iterations (and across distinct tables in the same changeset). */
       if( zLastTab==0 || sqlite3_stricmp(zLastTab, zTab)!=0 ){
         if( inTableObj ){
           if( curSection!=0 ) jsonAppendChar(&jx, ']');
@@ -229592,7 +229596,9 @@ SQLITE_PRIVATE int pragma_branch_diff(
         }
         jsonAppendChar(&jx, ']');
 
-        zLastTab = zTab;
+        sqlite3_free(zLastTab);
+        zLastTab = sqlite3_mprintf("%s", zTab);
+        if( !zLastTab ){ rc = SQLITE_NOMEM; break; }
       }
 
       {
@@ -230311,6 +230317,7 @@ loc_cleanup:
   if( zUri ) sqlite3_free(zUri);
   if( pChangeset ) sqlite3_free(pChangeset);
   if( zErr ) sqlite3_free(zErr);
+  if( zLastTab ) sqlite3_free(zLastTab);
   if( bJsonInit && !jx.bStatic ) sqlite3_free(jx.zBuf);
   if( azMismatch ){
     int iM;
