@@ -3758,6 +3758,698 @@ class TestSQLiteBranches(unittest.TestCase):
         delete_file("test5.db-lock")
 
 
+    # ------------------------------------------------------------------
+    # test26_merge_conflicts — exhaustive merge conflict scenarios that
+    # test23_merge did not cover (insert/insert, delete/update, update/delete,
+    # unique-index collision, multi-table merges, --check dry run, source.N
+    # partial-commit merges, self-merge no-op).
+    # ------------------------------------------------------------------
+    def test26_merge_conflicts(self):
+
+        def fresh(label="test5"):
+            """Start from a clean database on every sub-case."""
+            delete_file(label + ".db")
+            delete_file(label + ".db-lock")
+            return sqlite3.connect("file:" + label + ".db?branches=on")
+
+        # ---- 1. INSERT/INSERT with same PK: default aborts --------------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (1, 200)")   # same PK, different value
+        conn.commit()
+        with self.assertRaises(sqlite3.OperationalError) as ctx:
+            c.execute("PRAGMA branch_merge dev")
+        self.assertIn("abort", str(ctx.exception).lower())
+        # master unchanged
+        c.execute("SELECT val FROM t WHERE id=1")
+        self.assertEqual(c.fetchone()[0], 200)
+        conn.close()
+
+        # ---- 2. INSERT/INSERT same PK: --strategy=theirs takes dev's ----
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (1, 200)")
+        conn.commit()
+        c.execute("PRAGMA branch_merge --strategy=theirs dev")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT val FROM t WHERE id=1")
+        self.assertEqual(c.fetchone()[0], 100)        # theirs wins
+        conn.close()
+
+        # ---- 3. INSERT/INSERT same PK: --strategy=ours keeps master's ---
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (1, 200)")
+        conn.commit()
+        c.execute("PRAGMA branch_merge --strategy=ours dev")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT val FROM t WHERE id=1")
+        self.assertEqual(c.fetchone()[0], 200)        # ours wins
+        conn.close()
+
+        # ---- 4. DELETE (source) vs UPDATE (dest): default aborts --------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("DELETE FROM t WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("UPDATE t SET val=999 WHERE id=1")
+        conn.commit()
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_merge dev")
+        # master unchanged
+        c.execute("SELECT val FROM t WHERE id=1")
+        self.assertEqual(c.fetchone()[0], 999)
+        conn.close()
+
+        # ---- 5. DELETE (source) vs UPDATE (dest): theirs -> row gone ----
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("DELETE FROM t WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("UPDATE t SET val=999 WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch_merge --strategy=theirs dev")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT count(*) FROM t")
+        self.assertEqual(c.fetchone()[0], 0)           # delete applied
+        conn.close()
+
+        # ---- 6. UPDATE (source) vs DELETE (dest): default aborts --------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("UPDATE t SET val=777 WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("DELETE FROM t WHERE id=1")
+        conn.commit()
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_merge dev")
+        c.execute("SELECT count(*) FROM t")
+        self.assertEqual(c.fetchone()[0], 0)           # master unchanged
+        conn.close()
+
+        # ---- 7. UPDATE (source) vs DELETE (dest): theirs omits the UPDATE
+        # because its "old" row is missing. The row therefore stays deleted
+        # (this is the standard sessions NOTFOUND->OMIT behaviour).
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("UPDATE t SET val=777 WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("DELETE FROM t WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch_merge --strategy=theirs dev")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT count(*) FROM t WHERE id=1")
+        self.assertEqual(c.fetchone()[0], 0)
+        conn.close()
+
+        # ---- 8. UNIQUE index collision (non-PK column) ------------------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute(
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, "
+            "email TEXT NOT NULL UNIQUE)"
+        )
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 'a@x')")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (2, 'collide@x')")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (3, 'collide@x')")  # same email
+        conn.commit()
+        # different PKs but the UNIQUE(email) constraint is violated
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_merge dev")
+        conn.close()
+
+        # ---- 9. Multi-table merge: insert in t1, update in t2, delete t3 -
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, v INTEGER)")
+        c.execute("CREATE TABLE t2(id INTEGER PRIMARY KEY, v INTEGER)")
+        c.execute("CREATE TABLE t3(id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t1 VALUES (1, 10)")
+        c.execute("INSERT INTO t2 VALUES (1, 20)")
+        c.execute("INSERT INTO t3 VALUES (1, 30), (2, 40)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t1 VALUES (2, 99)")
+        c.execute("UPDATE t2 SET v=200 WHERE id=1")
+        c.execute("DELETE FROM t3 WHERE id=2")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        # master touches different tables/rows so no conflicts
+        c.execute("INSERT INTO t1 VALUES (3, 50)")
+        c.execute("INSERT INTO t3 VALUES (3, 60)")
+        conn.commit()
+        c.execute("PRAGMA branch_merge dev")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT id FROM t1 ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (2,), (3,)])
+        c.execute("SELECT v FROM t2 WHERE id=1")
+        self.assertEqual(c.fetchone()[0], 200)
+        c.execute("SELECT id FROM t3 ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (3,)])
+        conn.close()
+
+        # ---- 10. --check dry-run: no mutation on conflicting merge -----
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 1)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("UPDATE t SET v=11 WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("UPDATE t SET v=22 WHERE id=1")
+        conn.commit()
+
+        # --check must not mutate anything, even when conflicts exist
+        c.execute("PRAGMA branch_merge --check dev")
+        # OK return -- check is informational; concrete status would need
+        # a richer contract, but the mutation rule is what we care about.
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT v FROM t WHERE id=1")
+        self.assertEqual(c.fetchone()[0], 22)         # master untouched
+        c.execute("PRAGMA branch=dev")
+        c.execute("SELECT v FROM t WHERE id=1")
+        self.assertEqual(c.fetchone()[0], 11)         # dev untouched
+        conn.close()
+
+        # ---- 11. Self-merge is a no-op ----------------------------------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+        c.execute("PRAGMA branch_merge master master")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT count(*) FROM t")
+        self.assertEqual(c.fetchone()[0], 1)
+        conn.close()
+
+        # ---- 12. Partial-commit merge (source.N) ------------------------
+        # Only take the first change from dev, not the second.
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (1, 10)")      # dev commit #2
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (2, 20)")      # dev commit #3
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        # merge only dev up to its commit 2 -> only (1,10) comes in
+        c.execute("PRAGMA branch_merge dev.2")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT id FROM t ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,)])
+        conn.close()
+
+        # ---- 13. Merge with disjoint INSERTs (pure fast-forward-like) ---
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (1, 10)")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (2, 20)")
+        conn.commit()
+        c.execute("PRAGMA branch_merge dev")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT id FROM t ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (2,)])
+        conn.close()
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+
+
+    # ------------------------------------------------------------------
+    # test27_rebase_conflicts — exhaustive rebase conflict scenarios.
+    # test25_branch_rebase already covers: SQL-replay summing, rebase into
+    # a named new_branch, --check idempotency, range rebase, UNIQUE default
+    # abort vs --force. Here we add: UPDATE against a deleted row, NOT NULL
+    # violation, CHECK constraint, single-commit rebase, rebase with no
+    # commits in range, rebase into internal commit without new_branch,
+    # rebase that creates a table (DDL replay), and rebase producing
+    # multiple commits preserved as separate entries in the log.
+    # ------------------------------------------------------------------
+    def test27_rebase_conflicts(self):
+
+        def fresh(label="test5"):
+            delete_file(label + ".db")
+            delete_file(label + ".db-lock")
+            return sqlite3.connect("file:" + label + ".db?branches=on")
+
+        # ---- 1. UPDATE a row deleted on the new base --------------------
+        # The replayed UPDATE simply affects 0 rows; rebase succeeds silently.
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("UPDATE t SET v=200 WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("DELETE FROM t WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch_rebase dev master newb")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("PRAGMA branch=newb")
+        c.execute("SELECT count(*) FROM t")
+        self.assertEqual(c.fetchone()[0], 0)           # row is still gone
+        conn.close()
+
+        # ---- 2. NOT NULL violation (default aborts, --force skips) ------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute(
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, "
+            "name TEXT NOT NULL)"
+        )
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        # record an INSERT with a value that will later violate NOT NULL
+        # after schema change on master (we simulate it by dropping and
+        # re-creating the table on master with a narrower constraint).
+        c.execute("INSERT INTO t VALUES (1, 'alice')")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        # add a CHECK constraint by rebuilding
+        c.execute("ALTER TABLE t RENAME TO t_old")
+        c.execute(
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, "
+            "name TEXT NOT NULL CHECK(length(name)>=5))"
+        )
+        c.execute("INSERT INTO t SELECT * FROM t_old")
+        c.execute("DROP TABLE t_old")
+        conn.commit()
+        # dev's INSERT ('alice' is fine -> 5 chars). Use a name that
+        # violates the check to force the conflict.
+        c.execute("PRAGMA branch=dev")
+        c.execute("INSERT INTO t VALUES (2, 'hi')")    # length < 5
+        conn.commit()
+
+        # default: abort because of CHECK
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_rebase dev master newb_default")
+        # newb_default must not be left behind
+        c.execute("PRAGMA branches")
+        names = [r[0] for r in c.fetchall()]
+        self.assertNotIn("newb_default", names)
+
+        # --force: skip the offending row
+        c.execute("PRAGMA branch_rebase --force dev master newb_force")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("PRAGMA branch=newb_force")
+        c.execute("SELECT count(*) FROM t")
+        # only master's (1,'alice') survives; dev had no other rows above
+        # its source commit, and the INSERT ('hi') was skipped.
+        self.assertEqual(c.fetchone()[0], 1)
+        conn.close()
+
+        # ---- 3. Rebase a single commit (branch.commit syntax) -----------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (1, 10)")      # dev.2
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (2, 20)")      # dev.3
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (3, 30)")      # dev.4
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        # rebase only dev.3 onto master into a new branch
+        c.execute("PRAGMA branch_rebase dev.3 master only3")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("PRAGMA branch=only3")
+        c.execute("SELECT id FROM t ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(2,)])
+        conn.close()
+
+        # ---- 4. Rebase range covering 0 real new commits (src_from==src_to+1
+        #         case)  — we target the first commit on master to prove the
+        #         function doesn't crash on a single commit range. -------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=other at master.1")
+        # rebase only master.2 (the INSERT) onto other -> result has the row
+        c.execute("PRAGMA branch_rebase master.2-2 other replay")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("PRAGMA branch=replay")
+        c.execute("SELECT id FROM t")
+        self.assertListEqual(c.fetchall(), [(1,)])
+        conn.close()
+
+        # ---- 5. Rebase onto an internal commit WITHOUT new_branch -> err
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (2)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (3)")
+        conn.commit()
+        # rebase dev onto master.2 (internal commit) without giving a new
+        # branch name -> MISUSE
+        c.execute("PRAGMA branch=master")
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_rebase dev master.2")
+        conn.close()
+
+        # ---- 6. Rebase with DDL replay (CREATE TABLE on source) ---------
+        # The source commit contains a schema statement; replaying must
+        # create the table on the target.
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE base(id INTEGER PRIMARY KEY)")
+        conn.commit()
+        c.execute("INSERT INTO base VALUES (1)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("CREATE TABLE extra(x INTEGER, y INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO extra VALUES (10, 20)")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO base VALUES (2)")
+        conn.commit()
+        c.execute("PRAGMA branch_rebase dev master ddl_new")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("PRAGMA branch=ddl_new")
+        # the new table was created by SQL replay
+        c.execute("SELECT * FROM extra")
+        self.assertListEqual(c.fetchall(), [(10, 20)])
+        # and the base table still has the master rows
+        c.execute("SELECT id FROM base ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (2,)])
+        conn.close()
+
+        # ---- 7. Multi-commit rebase preserves one commit per source ----
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (1, 10)")      # dev.2
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (2, 20)")      # dev.3
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (3, 30)")      # dev.4
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (9, 90)")      # master.2
+        conn.commit()
+        c.execute("PRAGMA branch_rebase dev master rebased_multi")
+        self.assertEqual(c.fetchone()[0], "OK")
+        # The branch log must have one replayed commit per source commit,
+        # each owned by rebased_multi (not master).
+        c.execute("PRAGMA branch_log rebased_multi")
+        rows = c.fetchall()
+        replayed = [r for r in rows if r[0] == "rebased_multi"]
+        self.assertEqual(len(replayed), 3)
+        # And the commit numbers are contiguous starting from master.tip+1.
+        nums = sorted(r[1] for r in replayed)
+        self.assertEqual(nums, [3, 4, 5])
+        conn.close()
+
+        # ---- 8. Rebase is a no-op when source == base tip and target is
+        #         the same branch --------------------------------------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+        # rebase master onto master.tip with no new branch -> no-op OK
+        c.execute("PRAGMA branch_rebase master master")
+        self.assertEqual(c.fetchone()[0], "OK")
+        c.execute("SELECT id FROM t")
+        self.assertListEqual(c.fetchall(), [(1,)])
+        conn.close()
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+
+
+    # ------------------------------------------------------------------
+    # test28_branch_diff_extras — diff cases that test24_branch_diff did
+    # not exercise: BLOB hex encoding, NULL values, composite PKs, TEXT
+    # PKs, WITHOUT ROWID tables, diff from branch.commit (partial), and
+    # branches with completely disjoint change sets.
+    # ------------------------------------------------------------------
+    def test28_branch_diff_extras(self):
+
+        def fresh(label="test5"):
+            delete_file(label + ".db")
+            delete_file(label + ".db-lock")
+            return sqlite3.connect("file:" + label + ".db?branches=on")
+
+        # ---- 1. BLOB values are serialized as {"blob":"<hex>"} ----------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, data BLOB)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, x'DEADBEEF')")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (2, x'CAFEBABE')")
+        c.execute("UPDATE t SET data=x'00FF' WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("PRAGMA branch_diff master dev")
+        d = json.loads(c.fetchone()[0])
+        t = d["tables"]["t"]
+
+        # INSERT: blob wrapped as object
+        self.assertEqual(len(t["inserts"]), 1)
+        blob_ins = t["inserts"][0][1]
+        self.assertIsInstance(blob_ins, dict)
+        self.assertIn("blob", blob_ins)
+        self.assertEqual(blob_ins["blob"].lower(), "cafebabe")
+        # UPDATE: old and new blobs both encoded
+        self.assertEqual(len(t["updates"]), 1)
+        upd = t["updates"][0]
+        self.assertEqual(upd["old"][1]["blob"].lower(), "deadbeef")
+        self.assertEqual(upd["new"][1]["blob"].lower(), "00ff")
+        conn.close()
+
+        # ---- 2. NULL values in inserts and updates ---------------------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, a TEXT, b INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 'x', 10)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (2, NULL, NULL)")
+        c.execute("UPDATE t SET a=NULL, b=NULL WHERE id=1")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("PRAGMA branch_diff master dev")
+        d = json.loads(c.fetchone()[0])
+        t = d["tables"]["t"]
+        self.assertEqual(t["inserts"], [[2, None, None]])
+        self.assertEqual(t["updates"][0]["old"], [1, "x", 10])
+        self.assertEqual(t["updates"][0]["new"], [1, None, None])
+        conn.close()
+
+        # ---- 3. Composite primary key ----------------------------------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute(
+            "CREATE TABLE t(a INTEGER, b INTEGER, v TEXT, "
+            "PRIMARY KEY(a, b))"
+        )
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 1, 'one')")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (1, 2, 'one-two')")
+        c.execute("UPDATE t SET v='updated' WHERE a=1 AND b=1")
+        c.execute("INSERT INTO t VALUES (2, 1, 'two-one')")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("PRAGMA branch_diff master dev")
+        d = json.loads(c.fetchone()[0])
+        t = d["tables"]["t"]
+        self.assertEqual(t["pk"], ["a", "b"])
+        self.assertEqual(sorted(t["inserts"]),
+                         [[1, 2, "one-two"], [2, 1, "two-one"]])
+        self.assertEqual(t["updates"][0]["old"], [1, 1, "one"])
+        self.assertEqual(t["updates"][0]["new"], [1, 1, "updated"])
+        conn.close()
+
+        # ---- 4. TEXT primary key ---------------------------------------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE kv(k TEXT PRIMARY KEY, v INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO kv VALUES ('alpha', 1)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO kv VALUES ('beta', 2)")
+        c.execute("UPDATE kv SET v=99 WHERE k='alpha'")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("PRAGMA branch_diff master dev")
+        d = json.loads(c.fetchone()[0])
+        t = d["tables"]["kv"]
+        self.assertEqual(t["pk"], ["k"])
+        self.assertEqual(t["inserts"], [["beta", 2]])
+        self.assertEqual(t["updates"][0]["old"], ["alpha", 1])
+        self.assertEqual(t["updates"][0]["new"], ["alpha", 99])
+        conn.close()
+
+        # ---- 5. WITHOUT ROWID table ------------------------------------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute(
+            "CREATE TABLE wr(k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID"
+        )
+        conn.commit()
+        c.execute("INSERT INTO wr VALUES ('a', 'A')")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO wr VALUES ('b', 'B')")
+        c.execute("DELETE FROM wr WHERE k='a'")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("PRAGMA branch_diff master dev")
+        d = json.loads(c.fetchone()[0])
+        t = d["tables"]["wr"]
+        self.assertEqual(t["pk"], ["k"])
+        self.assertEqual(t["inserts"], [["b", "B"]])
+        self.assertEqual(t["deletes"], [["a", "A"]])
+        conn.close()
+
+        # ---- 6. Diff with a branch.commit endpoint on the "from" side --
+        # master.2 is before any of master's inserts; diff(master.2, dev)
+        # should show everything dev has minus the shared starting state.
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v INTEGER)")  # master.1
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 10)")                        # master.2
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (2, 20)")                        # dev.3
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (3, 30)")                        # master.3
+        conn.commit()
+
+        c.execute("PRAGMA branch_diff master.2 dev")
+        d = json.loads(c.fetchone()[0])
+        self.assertEqual(d["from"], "master.2")
+        t = d["tables"]["t"]
+        self.assertEqual(t["inserts"], [[2, 20]])                        # dev's row
+        self.assertEqual(t.get("deletes", []), [])
+        self.assertEqual(t.get("updates", []), [])
+        conn.close()
+
+        # ---- 7. Diff against self with explicit commits is empty -------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+        c.execute("PRAGMA branch_diff master.2 master.2")
+        d = json.loads(c.fetchone()[0])
+        self.assertEqual(d["from"], "master.2")
+        self.assertEqual(d["to"], "master.2")
+        self.assertEqual(d["tables"], {})
+        conn.close()
+
+        # ---- 8. Disjoint multi-table changes show up per table ---------
+        conn = fresh()
+        c = conn.cursor()
+        c.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY)")
+        c.execute("CREATE TABLE t2(id INTEGER PRIMARY KEY)")
+        c.execute("CREATE TABLE t3(id INTEGER PRIMARY KEY)")
+        conn.commit()
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t1 VALUES (1)")
+        c.execute("INSERT INTO t2 VALUES (2)")
+        c.execute("INSERT INTO t3 VALUES (3)")
+        conn.commit()
+        c.execute("PRAGMA branch=master")
+        c.execute("PRAGMA branch_diff master dev")
+        d = json.loads(c.fetchone()[0])
+        self.assertEqual(set(d["tables"].keys()), {"t1", "t2", "t3"})
+        self.assertEqual(d["tables"]["t1"]["inserts"], [[1]])
+        self.assertEqual(d["tables"]["t2"]["inserts"], [[2]])
+        self.assertEqual(d["tables"]["t3"]["inserts"], [[3]])
+        conn.close()
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+
+
     @classmethod
     def tearDownClass(self):
         delete_file("test.db")
