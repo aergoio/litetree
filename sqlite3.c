@@ -15843,6 +15843,7 @@ SQLITE_PRIVATE int    pragma_delete_branch(sqlite3 *db, int iDb, char *name);
 SQLITE_PRIVATE char * pragma_get_branch_info(sqlite3 *db, int iDb, char *name);
 SQLITE_PRIVATE int    pragma_branch_diff(sqlite3 *db, int iDb, char *zFrom, char *zTo, char **pzResult);
 SQLITE_PRIVATE int    pragma_branch_merge(sqlite3 *db, int iDb, char *zSource, char *zDest, int strategy);
+SQLITE_PRIVATE int    pragma_branch_rebase(sqlite3 *db, int iDb, char *zToRebase, char *zNewBase, char *zNewBranch, int strategy);
 SQLITE_PRIVATE int    find_common_ancestor(lmdb *lmdb, branch_info *source, branch_info *dest, branch_info **pAncestorBranch, u64 *pAncestorCommit);
 #ifndef OMIT_BRANCH_LOG
 SQLITE_PRIVATE int    pragma_get_branch_log(sqlite3 *db, int iDb, char *params, Parse *pParse);
@@ -67715,6 +67716,300 @@ loc_cleanup:
   if( pChangeset ) sqlite3_free(pChangeset);
   if( mergeCtx.pConflicts ) free_merge_conflicts(mergeCtx.pConflicts);
   if( mergeCtx.zErrMsg ) sqlite3_free(mergeCtx.zErrMsg);
+
+  return rc;
+}
+
+/*
+** PRAGMA branch_rebase [--check|--force] [{to_rebase}] {new_base} [{new_branch}]
+**
+** Replays the SQL commands from the {to_rebase} range on top of {new_base}.
+** Unlike a 3-way merge, rebase re-executes the original SQL, so expressions
+** like "UPDATE t SET x=x+1" are re-evaluated against the new base state — two
+** branches that both incremented a counter will therefore be summed, which is
+** the typical use case for rebase.
+**
+** Syntax:
+**   {to_rebase}  = branch name | branch.commit | branch.start-end
+**                  (if omitted, the current branch is rebased)
+**   {new_base}   = branch name | branch.commit
+**   {new_branch} = optional: if given, the rebased commits go into this NEW
+**                  branch (created at new_base); otherwise, new_base must be
+**                  the tip of its branch and the commits are appended there.
+**
+** Strategies:
+**   default       abort on any SQL error
+**   --force       ignore SQL errors (best effort replay)
+**   --check       perform the replay onto a scratch branch and discard it
+*/
+SQLITE_PRIVATE int pragma_branch_rebase(
+  sqlite3 *db,
+  int iDb,
+  char *zToRebase,        /* {branch} | {branch.commit} | {branch.start-end}, may be NULL */
+  char *zNewBase,         /* {branch} | {branch.commit} */
+  char *zNewBranch,       /* optional new branch name */
+  int strategy
+){
+  Btree *pBtree = getBtreeFromiDb(db, iDb);
+  Pager *pPager = getPagerFromBtree(pBtree);
+  lmdb *pLmdb;
+  branch_info *src_branch = 0;
+  branch_info *base_branch = 0;
+  u64 src_from = 0, src_to = 0;
+  u64 base_commit = 0;
+  char *zFilename = 0;
+  char *zUri = 0;
+  sqlite3 *dbInternal = 0;
+  char *zErr = 0;
+  char zPragma[512];
+  char zScratch[64];
+  char *zTargetBranchName = 0;
+  char zOriginalBranch[128] = {0};
+  int bUsingScratch = 0;
+  int rc;
+  u64 c;
+
+  if( !pPager || !pPager->lmdb ) return SQLITE_ERROR;
+  pLmdb = pPager->lmdb;
+  if( pLmdb->inReadTxn || pLmdb->inWriteTxn ) return SQLITE_MISUSE;
+
+  /* remember the caller's current branch so we can restore it at the end */
+  if( pLmdb->current_branch && pLmdb->current_branch->name ){
+    sqlite3_snprintf(sizeof(zOriginalBranch), zOriginalBranch, "%s",
+        pLmdb->current_branch->name);
+  }
+
+  if( !pLmdb->singleConnection ){
+    rc = sqlite3BranchCheckReloadDb(pPager, 0);
+    if( rc!=SQLITE_OK ) return rc;
+  }
+
+  if( zNewBase==0 || *zNewBase==0 ) return SQLITE_MISUSE;
+
+  /* --- resolve {to_rebase} ---------------------------------------------- */
+  if( zToRebase && *zToRebase ){
+    char *zDot = stripchr(zToRebase, '.');
+    int id = sqlite3BranchFind(pLmdb, zToRebase);
+    if( id<=0 ) return SQLITE_NOTFOUND;
+    src_branch = &pLmdb->branches[id];
+    if( zDot ){
+      char *zDash = stripchr(zDot, '-');
+      if( *zDot==0 ) return SQLITE_MISUSE;
+      src_from = atou64(zDot);
+      if( src_from==0 ) return SQLITE_MISUSE;
+      if( zDash ){
+        src_to = atou64(zDash);
+        if( src_to==0 ) return SQLITE_MISUSE;
+      } else {
+        src_to = src_from;
+      }
+    }
+  } else {
+    src_branch = pLmdb->current_branch;
+    if( !src_branch ) return SQLITE_ERROR;
+  }
+  if( src_from==0 ) src_from = src_branch->source_commit + 1;
+  if( src_to==0 )   src_to   = src_branch->last_commit;
+  if( src_to < src_from ) return SQLITE_MISUSE;
+  if( src_to > src_branch->last_commit ) return SQLITE_MISUSE;
+  if( src_from==0 || src_from > src_branch->last_commit ){
+    /* nothing to rebase */
+    return SQLITE_OK;
+  }
+
+  /* --- resolve {new_base} ----------------------------------------------- */
+  {
+    char *zDot = stripchr(zNewBase, '.');
+    int id = sqlite3BranchFind(pLmdb, zNewBase);
+    if( id<=0 ) return SQLITE_NOTFOUND;
+    base_branch = &pLmdb->branches[id];
+    if( zDot ){
+      base_commit = atou64(zDot);
+      if( base_commit==0 ) return SQLITE_MISUSE;
+      if( base_commit > base_branch->last_commit ) return SQLITE_MISUSE;
+    } else {
+      base_commit = base_branch->last_commit;
+    }
+  }
+
+  /* rebasing onto ourselves is a no-op */
+  if( base_branch->id==src_branch->id && base_commit==src_to && zNewBranch==0 ){
+    return SQLITE_OK;
+  }
+
+  BRANCHTRACE("rebase: to_rebase=%s.%llu-%llu new_base=%s.%llu new_branch=%s strategy=%d",
+      src_branch->name, src_from, src_to,
+      base_branch->name, base_commit,
+      zNewBranch ? zNewBranch : "(none)", strategy);
+
+  /* --- decide the target branch ----------------------------------------- */
+  if( strategy==MERGE_STRATEGY_CHECK ){
+    /* --check uses a throw-away scratch branch so the replay is observable
+    ** but never touches existing branches. */
+    sqlite3_snprintf(sizeof(zScratch), zScratch, "__rebase_check_%p", (void*)db);
+    /* sanitize colon etc. out — only alnum/underscore is safe for a branch name */
+    {
+      int i;
+      for(i=0; zScratch[i]; i++){
+        char ch = zScratch[i];
+        if( !((ch>='0'&&ch<='9')||(ch>='a'&&ch<='z')||(ch>='A'&&ch<='Z')||ch=='_') ){
+          zScratch[i]='_';
+        }
+      }
+    }
+    /* if something left it around from a previous run, remove it first */
+    if( sqlite3BranchFind(pLmdb, zScratch) > 0 ){
+      pragma_delete_branch(db, iDb, zScratch);
+    }
+    {
+      char zCommit[32];
+      sqlite3_snprintf(sizeof(zCommit), zCommit, "%llu", base_commit);
+      rc = pragma_new_branch(db, iDb, zScratch, base_branch->name, zCommit);
+    }
+    if( rc!=SQLITE_OK ) return rc;
+    zTargetBranchName = zScratch;
+    bUsingScratch = 1;
+  } else if( zNewBranch && *zNewBranch ){
+    /* create a fresh branch at new_base and replay into it */
+    char zCommit[32];
+    sqlite3_snprintf(sizeof(zCommit), zCommit, "%llu", base_commit);
+    rc = pragma_new_branch(db, iDb, zNewBranch, base_branch->name, zCommit);
+    if( rc!=SQLITE_OK ) return rc;
+    zTargetBranchName = zNewBranch;
+  } else {
+    /* append into new_base directly — requires new_base to be at its tip */
+    if( base_commit != base_branch->last_commit ){
+      /* can't append after an internal commit without a new branch name */
+      return SQLITE_MISUSE;
+    }
+    zTargetBranchName = base_branch->name;
+  }
+
+  /* --- open an internal connection for the replay ----------------------- */
+  zFilename = (char *)sqlite3_db_filename(db, "main");
+  if( !zFilename ){ rc = SQLITE_ERROR; goto cleanup; }
+  zUri = sqlite3_mprintf("file:%s?branches=on&single_connection=true", zFilename);
+  if( !zUri ){ rc = SQLITE_NOMEM; goto cleanup; }
+
+  rc = sqlite3_open(zUri, &dbInternal);
+  sqlite3_free(zUri); zUri = 0;
+  if( rc!=SQLITE_OK ) goto cleanup;
+
+  sqlite3_snprintf(sizeof(zPragma), zPragma, "PRAGMA branch=%s", zTargetBranchName);
+  rc = sqlite3_exec(dbInternal, zPragma, 0, 0, &zErr);
+  if( rc!=SQLITE_OK ) goto cleanup;
+
+  /* --- replay each source commit as a transaction ----------------------- */
+  for( c=src_from; c<=src_to; c++ ){
+    char *log = 0;
+    int size = 0;
+    branch_info *xbranch = src_branch;
+    int xid = xbranch->id;
+    char *base = 0;
+    size_t bsize = 0;
+    int bInTxn = 0;
+    int bAnyCmd = 0;
+
+    /* resolve which physical branch holds this commit (may be an ancestor) */
+    while( c <= xbranch->source_commit ){
+      xid = xbranch->source_branch;
+      xbranch = &pLmdb->branches[xid];
+    }
+
+    /* load the log for this commit */
+    {
+      int inTxn = pLmdb->inReadTxn || pLmdb->inWriteTxn;
+      if( !inTxn ){
+        rc = sqlite3BranchBeginReadTransaction(pLmdb, 0, NULL);
+        if( rc ) goto cleanup;
+      }
+      rc = branch_get_log(pLmdb, xid, c, &log, &size);
+      if( rc==SQLITE_OK && log && size>0 ){
+        /* copy out — memory is owned by LMDB and invalid after end_read */
+        char *copy = sqlite3_malloc(size);
+        if( !copy ){ rc = SQLITE_NOMEM; }
+        else { memcpy(copy, log, size); log = copy; }
+      } else {
+        log = 0;
+      }
+      if( !inTxn ) sqlite3BranchEndReadTransaction(pLmdb);
+      if( rc==SQLITE_NOTFOUND ){ rc = SQLITE_OK; continue; }
+      if( rc!=SQLITE_OK ) goto cleanup;
+      if( !log ) continue;
+    }
+
+    base = log;
+    bsize = size;
+
+    /* start an explicit transaction so all commands go into one commit */
+    rc = sqlite3_exec(dbInternal, "BEGIN", 0, 0, &zErr);
+    if( rc!=SQLITE_OK ){
+      sqlite3_free(log);
+      goto cleanup;
+    }
+    bInTxn = 1;
+
+    /* iterate SQL commands from the netstring-encoded log */
+    while( 1 ){
+      char *sql = 0;
+      size_t len = 0;
+      int nrc;
+      if( netstring_read(&base, &bsize, &sql, &len)!=0 ) break;
+      if( !sql || len==0 ) continue;
+      {
+        char *sql2 = sqlite3_malloc(len+1);
+        if( !sql2 ){ rc = SQLITE_NOMEM; break; }
+        memcpy(sql2, sql, len);
+        sql2[len] = 0;
+        BRANCHTRACE("rebase replay [%s.%llu]: %s", xbranch->name, c, sql2);
+        nrc = sqlite3_exec(dbInternal, sql2, 0, 0, &zErr);
+        sqlite3_free(sql2);
+        if( nrc!=SQLITE_OK ){
+          if( strategy==MERGE_STRATEGY_THEIRS ){
+            /* --force: swallow the error, keep going */
+            if( zErr ){ sqlite3_free(zErr); zErr = 0; }
+            continue;
+          }
+          rc = nrc;
+          break;
+        }
+        bAnyCmd = 1;
+      }
+    }
+
+    if( rc==SQLITE_OK && bAnyCmd ){
+      rc = sqlite3_exec(dbInternal, "COMMIT", 0, 0, &zErr);
+      bInTxn = 0;
+    } else {
+      if( bInTxn ) sqlite3_exec(dbInternal, "ROLLBACK", 0, 0, 0);
+      bInTxn = 0;
+    }
+    sqlite3_free(log);
+    if( rc!=SQLITE_OK ) goto cleanup;
+  }
+
+cleanup:
+  if( dbInternal ) sqlite3_close(dbInternal);
+  if( zUri ) sqlite3_free(zUri);
+  if( zErr ) sqlite3_free(zErr);
+
+  /* restore the caller's current branch first — pragma_new_branch and the
+  ** internal connection's "PRAGMA branch=..." both mutate current_branch on
+  ** the shared lmdb state, and pragma_delete_branch cannot remove the current
+  ** branch. */
+  if( zOriginalBranch[0] && sqlite3BranchFind(pLmdb, zOriginalBranch) > 0 ){
+    pragma_set_current_branch(db, iDb, zOriginalBranch, 0);
+  }
+
+  if( bUsingScratch ){
+    /* drop the scratch branch whether the check succeeded or failed */
+    pragma_delete_branch(db, iDb, zScratch);
+  } else if( rc!=SQLITE_OK && zNewBranch && *zNewBranch ){
+    /* non-check path failed after creating a new branch: roll it back */
+    pragma_delete_branch(db, iDb, zNewBranch);
+  }
+
+  invalidate_loaded_sqlite_data(db, pBtree);
 
   return rc;
 }
@@ -129149,6 +129444,87 @@ SQLITE_PRIVATE void sqlite3Pragma(
     } else {
       sqlite3ErrorMsg(pParse,
           "usage: PRAGMA branch_merge [--check|--force|--strategy=ours|theirs] {source} [{dest}]");
+    }
+    break;
+  }
+
+  case PragTyp_BRANCH_REBASE: {
+    int merge_strategy = MERGE_STRATEGY_ABORT;
+    char *zArgs = 0;
+    char *zTok1 = 0;
+    char *zTok2 = 0;
+    char *zTok3 = 0;
+    char *zToRebase = 0;
+    char *zNewBase = 0;
+    char *zNewBranch = 0;
+    int nTok = 0;
+
+    if( zRight==0 || zRight[0]==0 ){
+      sqlite3ErrorMsg(pParse,
+          "usage: PRAGMA branch_rebase [--check|--force] [{to_rebase}] {new_base} [{new_branch}]");
+      break;
+    }
+
+    if( strncmp(zRight,"--check ",8)==0 ){
+      merge_strategy = MERGE_STRATEGY_CHECK;
+      zArgs = zRight + 8;
+    } else if( strncmp(zRight,"--force ",8)==0 ){
+      merge_strategy = MERGE_STRATEGY_THEIRS;
+      zArgs = zRight + 8;
+    } else if( zRight[0]=='-' ){
+      sqlite3ErrorMsg(pParse,
+          "usage: PRAGMA branch_rebase [--check|--force] [{to_rebase}] {new_base} [{new_branch}]");
+      break;
+    } else {
+      zArgs = zRight;
+    }
+    while( *zArgs==' ' ) zArgs++;
+
+    zTok1 = zArgs;
+    zTok2 = stripchr(zTok1, ' ');
+    if( zTok2 ){
+      while( *zTok2==' ' ) zTok2++;
+      if( *zTok2==0 ) zTok2 = 0;
+    }
+    if( zTok2 ){
+      zTok3 = stripchr(zTok2, ' ');
+      if( zTok3 ){
+        while( *zTok3==' ' ) zTok3++;
+        if( *zTok3==0 ) zTok3 = 0;
+      }
+    }
+    if( zTok3 ){
+      char *zExtra = stripchr(zTok3, ' ');
+      if( zExtra ){
+        sqlite3ErrorMsg(pParse,
+            "usage: PRAGMA branch_rebase [--check|--force] [{to_rebase}] {new_base} [{new_branch}]");
+        break;
+      }
+    }
+
+    nTok = (zTok1?1:0) + (zTok2?1:0) + (zTok3?1:0);
+    if( nTok==1 ){
+      /* rebase current branch onto {new_base} */
+      zNewBase = zTok1;
+    } else if( nTok==2 ){
+      /* {to_rebase} {new_base} */
+      zToRebase = zTok1;
+      zNewBase  = zTok2;
+    } else if( nTok==3 ){
+      zToRebase  = zTok1;
+      zNewBase   = zTok2;
+      zNewBranch = zTok3;
+    } else {
+      sqlite3ErrorMsg(pParse,
+          "usage: PRAGMA branch_rebase [--check|--force] [{to_rebase}] {new_base} [{new_branch}]");
+      break;
+    }
+
+    rc = pragma_branch_rebase(db, iDb, zToRebase, zNewBase, zNewBranch, merge_strategy);
+    if( rc ){
+      sqlite3ErrorMsg(pParse, sqlite3ErrStr(rc));
+    } else {
+      returnSingleText(v, "OK");
     }
     break;
   }

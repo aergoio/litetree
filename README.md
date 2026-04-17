@@ -230,6 +230,25 @@ It is also possible to truncate a branch at a specific commit, rename a branch, 
 	Renames of tables or columns are not detected — a rename shows up
 	as a `dropped` + `created` pair (for a table rename) or as
 	`removed` + `added` inside `schema_diff` (for a column rename).
+- Rebasing commits onto a new base (SQL-replay):
+	```
+	PRAGMA branch_rebase [--check|--force] [{to_rebase}] {new_base} [{new_branch}]
+	```
+	Where `{to_rebase}` is either a branch name, a single commit
+	`branch.commit`, or a commit range `branch.start-end`. If omitted,
+	the current branch is rebased. `{new_base}` is the target point
+	(a branch tip or `branch.commit`). If `{new_branch}` is given, the
+	rebased commits are written into that newly-created branch;
+	otherwise the commits are appended to the `{new_base}` branch
+	(which must therefore be at its tip). `--check` performs the
+	replay against a throw-away scratch branch and discards it.
+	`--force` keeps going on SQL errors instead of aborting.
+
+	Rebase re-executes the original SQL commands, so expressions like
+	`UPDATE t SET x=x+1` are re-evaluated against the new base state.
+	Two branches that each ran `x=x+1` will therefore be summed —
+	this is the main reason to prefer rebase over a merge for that
+	kind of change.
 
 #### Not yet available
 

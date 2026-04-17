@@ -3576,6 +3576,188 @@ class TestSQLiteBranches(unittest.TestCase):
         conn.close()
 
 
+    def test25_branch_rebase(self):
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        # --- 1. SQL-replay: UPDATE x=x+1 on both branches should sum up ---
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 10)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("UPDATE t SET val = val + 1 WHERE id = 1")
+        conn.commit()
+        c.execute("UPDATE t SET val = val + 1 WHERE id = 1")
+        conn.commit()
+        # dev now has val = 12
+
+        c.execute("PRAGMA branch=master")
+        c.execute("UPDATE t SET val = val + 1 WHERE id = 1")
+        conn.commit()
+        # master now has val = 11
+
+        # rebase dev onto master tip: the two UPDATE x=x+1 commands are re-
+        # executed against master's state (11), so the result should be 13
+        c.execute("PRAGMA branch=dev")
+        c.execute("PRAGMA branch_rebase master")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        c.execute("PRAGMA branch=master")
+        c.execute("SELECT val FROM t WHERE id = 1")
+        self.assertEqual(c.fetchone()[0], 13)
+        conn.close()
+
+        # --- 2. rebase into a named new branch leaves originals untouched ---
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 10)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (2, 20)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (3, 30)")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (4, 40)")
+        conn.commit()
+
+        c.execute("PRAGMA branch_rebase dev master rebased")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        # originals untouched
+        c.execute("PRAGMA branch=master")
+        c.execute("SELECT id FROM t ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (4,)])
+
+        c.execute("PRAGMA branch=dev")
+        c.execute("SELECT id FROM t ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (2,), (3,)])
+
+        # new branch has master's content plus dev's replayed commits
+        c.execute("PRAGMA branch=rebased")
+        c.execute("SELECT id FROM t ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (2,), (3,), (4,)])
+        conn.close()
+
+        # --- 3. --check must not modify anything ---
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 10)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (2, 20)")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (3, 30)")
+        conn.commit()
+
+        # capture branches before
+        c.execute("PRAGMA branches")
+        before = sorted([r[0] for r in c.fetchall()])
+
+        c.execute("PRAGMA branch=dev")
+        c.execute("PRAGMA branch_rebase --check master")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        # same branches, same content
+        c.execute("PRAGMA branches")
+        self.assertListEqual(sorted([r[0] for r in c.fetchall()]), before)
+
+        c.execute("PRAGMA branch=dev")
+        c.execute("SELECT id FROM t ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (2,)])
+
+        c.execute("PRAGMA branch=master")
+        c.execute("SELECT id FROM t ORDER BY id")
+        self.assertListEqual(c.fetchall(), [(1,), (3,)])
+        conn.close()
+
+        # --- 4. range rebase (branch.start-end) to an internal commit ---
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)")
+        conn.commit()
+        for i in range(1, 5):
+            c.execute("INSERT INTO t VALUES (?)", (i,))
+            conn.commit()
+        # master.1 = CREATE TABLE
+        # master.2..5 = INSERT 1..4
+
+        # move commits master.4-5 (INSERT 3, INSERT 4) onto master.2 into 'moved'
+        c.execute("PRAGMA branch_rebase master.4-5 master.2 moved")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        c.execute("PRAGMA branch=moved")
+        c.execute("SELECT id FROM t ORDER BY id")
+        # moved = master.2 (has id=1) + INSERT 3 + INSERT 4
+        self.assertListEqual(c.fetchall(), [(1,), (3,), (4,)])
+        conn.close()
+
+        # --- 5. default strategy aborts on conflict; --force proceeds ---
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+        conn = sqlite3.connect("file:test5.db?branches=on")
+        c = conn.cursor()
+
+        c.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, val INTEGER)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (1, 100)")
+        conn.commit()
+
+        c.execute("PRAGMA new_branch=dev at master")
+        c.execute("INSERT INTO t VALUES (2, 200)")
+        conn.commit()
+        c.execute("INSERT INTO t VALUES (3, 300)")
+        conn.commit()
+
+        c.execute("PRAGMA branch=master")
+        c.execute("INSERT INTO t VALUES (2, 999)")  # same pk as dev.2
+        conn.commit()
+
+        # default: abort on UNIQUE constraint
+        with self.assertRaises(sqlite3.OperationalError):
+            c.execute("PRAGMA branch_rebase dev master newb")
+
+        # newb must not be left behind
+        c.execute("PRAGMA branches")
+        self.assertNotIn("newb", [r[0] for r in c.fetchall()])
+
+        # --force: skip the conflicting statement, apply the rest
+        c.execute("PRAGMA branch_rebase --force dev master newb2")
+        self.assertEqual(c.fetchone()[0], "OK")
+
+        c.execute("PRAGMA branch=newb2")
+        c.execute("SELECT id, val FROM t ORDER BY id")
+        # keeps master's (2, 999); dev's (2, 200) was skipped; (3, 300) applied
+        self.assertListEqual(c.fetchall(), [(1, 100), (2, 999), (3, 300)])
+        conn.close()
+
+        delete_file("test5.db")
+        delete_file("test5.db-lock")
+
+
     @classmethod
     def tearDownClass(self):
         delete_file("test.db")
